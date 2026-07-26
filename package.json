@@ -1,0 +1,30 @@
+{
+  "name": "bot-anuncios-md-discord",
+  "version": "1.0.0",
+  "description": "Bot de anuncios por MD con sistema de consentimiento - Discord.js v14",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "anuncios",
+    "consentimiento"
+  ],
+  "author": "BlommamPro",
+  "license": "AGPL-3.0-or-later",
+  "dependencies": {
+    "discord.js": "14.14.1",
+    "dotenv": "17.4.2"
+  },
+  "devDependencies": {
+    "nodemon": "3.0.2"
+  },
+  "engines": {
+    "node": "18.0.0",
+    "pnpm": "8.0.0"
+  },
+  "packageManager": "pnpm@9.15.0"
+}
