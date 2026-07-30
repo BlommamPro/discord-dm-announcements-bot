@@ -14,7 +14,6 @@
 - ✅ **Sistema de consentimiento por reacción**: los usuarios reaccionan con un emoji (por defecto ✅) en un mensaje embed para aceptar o revocar el consentimiento.
 - 🛡️ **Cumplimiento orientado a GDPR**: gestión de consentimientos persistente.
 - ⚡ **Discord.js v14**: API moderna y estable.
-- 🔒 **Código abierto** bajo AGPL-3.0: cualquier modificación debe mantenerse pública.
 
 ---
 
@@ -165,20 +164,6 @@ pnpm start
 - El archivo `.env` está en `.gitignore` para evitar filtrar tu token.
 - El archivo `consentidos.json` contiene datos personales (IDs de Discord). Considera implementar una base de datos real (SQLite, MongoDB, etc.) para producción a gran escala.
 
----
-
-## 📜 Licencia
-
-Este proyecto está licenciado bajo la **GNU Affero General Public License v3.0** (AGPL-3.0).
-
-Esto significa que:
-- ✅ Puedes usar, modificar y redistribuir el código libremente.
-- ✅ Puedes usarlo con fines comerciales.
-- 🔒 **Si modificas el código y lo ejecutas en un servidor (incluso sin distribuir archivos), debes publicar tu código modificado bajo la misma licencia AGPL-3.0.**
-
-Consulta el archivo [LICENSE](./LICENSE) para más detalles.
-
----
 
 ## 🤝 Contribuciones
 
