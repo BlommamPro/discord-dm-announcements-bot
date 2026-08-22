@@ -2,7 +2,6 @@
 
 > Bot de Discord para enviar anuncios por mensaje directo (MD) con sistema de consentimiento mediante reacciones. Desarrollado con Discord.js v14.
 
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Discord.js](https://img.shields.io/badge/Discord.js-v14-5865F2?logo=discord&logoColor=white)](https://discord.js.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 
