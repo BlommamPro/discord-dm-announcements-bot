@@ -6,3 +6,4 @@ consentidos.json
 src/web/public/uploads/*
 !src/web/public/uploads/.gitkeep
 historial.json
+failed_users.json
