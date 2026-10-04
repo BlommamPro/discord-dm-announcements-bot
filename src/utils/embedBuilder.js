@@ -1,95 +1,109 @@
-const { EmbedBuilder } = require('discord.js');
+const {
+    ContainerBuilder,
+    TextDisplayBuilder,
+    MediaGalleryBuilder,
+    MediaGalleryItemBuilder,
+    SeparatorBuilder,
+    SeparatorSpacingSize,
+    SectionBuilder,
+    ThumbnailBuilder
+} = require('discord.js');
 
-const colorMap = {
-    rojo: 0xFF0000, red: 0xFF0000,
-    verde: 0x00FF00, green: 0x00FF00,
-    azul: 0x0000FF, blue: 0x0000FF,
-    amarillo: 0xFFFF00, yellow: 0xFFFF00,
-    morado: 0x800080, purple: 0x800080,
-    naranja: 0xFFA500, orange: 0xFFA500,
-    rosa: 0xFFC0CB, pink: 0xFFC0CB,
-    negro: 0x000000, black: 0x000000,
-    blanco: 0xFFFFFF, white: 0xFFFFFF,
-    gris: 0x808080, gray: 0x808080,
-    cyan: 0x00FFFF, cian: 0x00FFFF,
-    magenta: 0xFF00FF,
-};
-
-function parseColor(colorStr) {
-    if (!colorStr) return null;
-    const clean = colorStr.toLowerCase().trim();
-    if (colorMap[clean]) return colorMap[clean];
-    if (clean.startsWith('#')) {
-        try {
-            return parseInt(clean.slice(1), 16);
-        } catch {
-            return null;
-        }
-    }
-    return null;
-}
-
-function validateUrl(url) {
-    if (!url) return null;
-    const trimmed = url.trim();
-    return trimmed.startsWith('http') ? trimmed : null;
-}
-
-function parseImageUrls(text) {
-    if (!text) return [];
-    return text
-        .split(/[\n,]+/)
-        .map(url => url.trim())
-        .filter(url => url.startsWith('http'));
-}
-
+/**
+ * Convierte embedData a un Container V2.
+ * Soporta: title, description, color, image, thumbnail, author, footer, fields, timestamp
+ */
 function crearEmbed(data) {
-    const color = parseColor(data.color);
-    const urlTitulo = validateUrl(data.url_titulo);
+    const container = new ContainerBuilder();
 
-    const embed = new EmbedBuilder()
-        .setTitle(data.titulo || null)
-        .setDescription(data.descripcion || null)
-        .setColor(color || null)
-        .setURL(urlTitulo)
-        .setTimestamp();
+    // Color
+    if (data.color) {
+        try {
+            const hex = data.color.startsWith('#') ? data.color : `#${data.color}`;
+            container.setAccentColor(parseInt(hex.replace('#', ''), 16));
+        } catch {
+            container.setAccentColor(0x5865F2);
+        }
+    } else {
+        container.setAccentColor(0x5865F2);
+    }
 
+    // Autor
     if (data.autor) {
-        embed.setAuthor({
-            name: data.autor,
-            iconURL: validateUrl(data.autor_icon)
-        });
+        container.addTextDisplayComponents(
+            new TextDisplayBuilder().setContent(`**${data.autor}**`)
+        );
     }
 
-    if (data.imagen) {
-        const imgUrl = validateUrl(data.imagen);
-        if (imgUrl) embed.setImage(imgUrl);
+    // Título
+    if (data.titulo || data.title) {
+        container.addTextDisplayComponents(
+            new TextDisplayBuilder().setContent(`# ${data.titulo || data.title}`)
+        );
     }
 
+    // Descripción
+    if (data.descripcion || data.description) {
+        container.addTextDisplayComponents(
+            new TextDisplayBuilder().setContent(data.descripcion || data.description)
+        );
+    }
+
+    // Thumbnail como Section con accesorio
     if (data.thumbnail) {
-        const thumbUrl = validateUrl(data.thumbnail);
-        if (thumbUrl) embed.setThumbnail(thumbUrl);
+        const section = new SectionBuilder();
+        section.addTextDisplayComponents(
+            new TextDisplayBuilder().setContent('\u200B')
+        );
+        section.setThumbnailAccessory(
+            new ThumbnailBuilder().setURL(data.thumbnail)
+        );
+        container.addSectionComponents(section);
     }
 
-    if (data.footer) {
-        embed.setFooter({
-            text: data.footer,
-            iconURL: validateUrl(data.footer_icon)
-        });
+    // Imagen principal (galería)
+    if (data.imagen || data.image) {
+        const gallery = new MediaGalleryBuilder();
+        gallery.addItems(
+            new MediaGalleryItemBuilder().setURL(data.imagen || data.image)
+        );
+        container.addMediaGalleryComponents(gallery);
     }
 
-    const fields = data.fields || [];
-    for (const field of fields) {
-        if (field.name && field.value) {
-            embed.addFields({
-                name: field.name,
-                value: field.value,
-                inline: field.inline ?? true
-            });
+    // Fields
+    if (data.fields && data.fields.length > 0) {
+        container.addSeparatorComponents(
+            new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
+        );
+        for (const field of data.fields) {
+            container.addTextDisplayComponents(
+                new TextDisplayBuilder().setContent(`**${field.name}**\n${field.value}`)
+            );
         }
     }
 
-    return embed;
+    // Footer
+    if (data.footer) {
+        container.addSeparatorComponents(
+            new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
+        );
+        container.addTextDisplayComponents(
+            new TextDisplayBuilder().setContent(`-# ${data.footer}`)
+        );
+    }
+
+    return container;
 }
 
-module.exports = { crearEmbed, parseColor, validateUrl, parseImageUrls };
+/**
+ * Parsea URLs de imágenes de un texto (una por línea).
+ */
+function parseImageUrls(texto) {
+    if (!texto) return [];
+    return texto
+        .split('\n')
+        .map(l => l.trim())
+        .filter(l => /^https?:\/\//i.test(l));
+}
+
+module.exports = { crearEmbed, parseImageUrls };

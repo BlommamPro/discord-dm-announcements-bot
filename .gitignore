@@ -3,3 +3,6 @@ node_modules/
 config.json
 consentidos.json
 *.log
+src/web/public/uploads/*
+!src/web/public/uploads/.gitkeep
+historial.json

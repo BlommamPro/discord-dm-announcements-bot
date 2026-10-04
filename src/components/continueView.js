@@ -1,25 +1,50 @@
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const {
+    ContainerBuilder,
+    TextDisplayBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle
+} = require('discord.js');
 
-function createContinueView(step) {
-    const labels = {
-        imagenes: { primary: '🖼️ Agregar Imágenes', success: '✅ Terminar Así' },
-        campos: { primary: '📋 Agregar Campos', success: '✅ Terminar Así' }
-    };
+function createContinueView(tipo) {
+    const container = new ContainerBuilder().setAccentColor(0x5865F2);
 
-    const config = labels[step] || labels.imagenes;
+    let titulo = '¿Continuar?';
+    if (tipo === 'imagenes') titulo = '🖼️ ¿Agregar imágenes?';
+    if (tipo === 'campos') titulo = '📋 ¿Agregar campos adicionales?';
 
-    const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId(`continuar_${step}`)
-            .setLabel(config.primary)
-            .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-            .setCustomId(`terminar_${step}`)
-            .setLabel(config.success)
-            .setStyle(ButtonStyle.Success)
+    container.addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(`# ${titulo}`)
     );
 
-    return row;
+    const row = new ActionRowBuilder();
+    if (tipo === 'imagenes') {
+        row.addComponents(
+            new ButtonBuilder()
+                .setCustomId('continuar_imagenes')
+                .setLabel('➕ Sí, agregar imágenes')
+                .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+                .setCustomId('terminar_imagenes')
+                .setLabel('⏭️ No, continuar')
+                .setStyle(ButtonStyle.Secondary)
+        );
+    } else if (tipo === 'campos') {
+        row.addComponents(
+            new ButtonBuilder()
+                .setCustomId('continuar_campos')
+                .setLabel('➕ Sí, agregar campos')
+                .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+                .setCustomId('terminar_campos')
+                .setLabel('⏭️ No, finalizar')
+                .setStyle(ButtonStyle.Secondary)
+        );
+    }
+
+    container.addActionRowComponents(row);
+
+    return container; // ahora devuelve un Container, no un array
 }
 
 module.exports = { createContinueView };

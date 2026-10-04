@@ -26,6 +26,14 @@ client.login(botConfig.token).catch(error => {
 
 const os = require('os');
 
+const { createWebServer } = require('./web/server');
+
+// Cuando el bot esté listo, arranca la dashboard
+client.on('clientReady', () => {
+    console.log(`✅ Bot conectado como ${client.user.tag}`);
+    createWebServer(client);
+});
+
 function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
     const k = 1024;

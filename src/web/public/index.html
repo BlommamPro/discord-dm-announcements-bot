@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Bot de Anuncios</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📨</text></svg>">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-view" class="card">
+    <h1>🔐 Iniciar sesión</h1>
+    <input id="user" placeholder="Usuario">
+    <input id="password" type="password" placeholder="Contraseña">
+    <button onclick="login()">Entrar</button>
+    <p id="login-error" class="error"></p>
+</div>
+
+<!-- DASHBOARD -->
+<div id="dashboard-view" style="display:none;">
+    <header>
+        <h1>📨 Dashboard de Anuncios</h1>
+        <button onclick="logout()" class="secondary">Cerrar sesión</button>
+    </header>
+
+    <div class="card">
+        <h2>📊 Estadísticas</h2>
+        <p>Usuarios consentidos: <strong id="consent-count">0</strong></p>
+        <p>Imágenes en caché: <strong id="uploads-count">0</strong> (<span id="uploads-size">0 MB</span>)</p>
+    </div>
+
+    <div class="card">
+        <h2>📬 Crear Anuncio</h2>
+
+        <label>Color del borde</label>
+        <input id="accent-color" type="color" value="#5865f2" onchange="saveToLocalStorage()">
+
+        <p class="hint">💡 Construye tu anuncio añadiendo bloques abajo. El orden se respeta al enviar.</p>
+
+        <!-- CONTENEDOR DE BLOQUES -->
+        <div id="blocks-container"></div>
+
+        <!-- AÑADIR BLOQUE -->
+        <div class="add-block-row">
+            <select id="block-type">
+                <option value="text">📝 Texto</option>
+                <option value="title">🎨 Título</option>
+                <option value="image">🖼️ Imagen</option>
+                <option value="gallery">🖼️🖼️ Galería</option>
+                <option value="separator">─ Separador</option>
+                <option value="field">📋 Campo</option>
+                <option value="button">🔘 Botón (link)</option>
+            </select>
+            <button onclick="addBlock()">➕ Añadir bloque</button>
+            <button onclick="clearBlocks()" class="secondary danger">🗑️ Limpiar todo</button>
+        </div>
+
+        <p class="hint" id="block-count">Bloques: 0 / 20</p>
+
+        <button type="button" onclick="previewEmbed()" class="secondary">👁️ Vista previa</button>
+        <div id="embed-preview"></div>
+
+        <button onclick="sendAnnouncement()" id="send-btn">🚀 Enviar a todos</button>
+
+        <div id="progress-container" style="display:none;">
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <p id="progress-text"></p>
+        </div>
+
+        <p id="result"></p>
+    </div>
+
+    <div class="card">
+        <h2>📜 Historial</h2>
+        <div id="history"></div>
+    </div>
+</div>
+
+<!-- INPUT GLOBAL PARA SUBIR IMÁGENES -->
+<input type="file" id="global-file-input" accept="image/*" multiple style="display:none;">
+
+<script src="app.js"></script>
+</body>
+</html>

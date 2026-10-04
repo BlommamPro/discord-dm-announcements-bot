@@ -7,11 +7,17 @@ const { createEmbedModal2 } = require('../modals/embedModal2');
 const { createEmbedModal3 } = require('../modals/embedModal3');
 const { createConfirmView } = require('../components/confirmView');
 const { createContinueView } = require('../components/continueView');
-const { MessageFlags, AttachmentBuilder } = require('discord.js');
+const {
+    MessageFlags,
+    AttachmentBuilder,
+    ContainerBuilder,
+    TextDisplayBuilder
+} = require('discord.js');
 const https = require('https');
 const http = require('http');
 
 const tempData = new Map();
+const V2 = MessageFlags.IsComponentsV2;
 
 function truncar(texto, max = 1900) {
     if (!texto || texto.length <= max) return texto;
@@ -53,6 +59,17 @@ function downloadImage(url) {
     });
 }
 
+/**
+ * Helper: construye un Container simple con solo texto.
+ */
+function simpleTextContainer(text) {
+    return new ContainerBuilder()
+        .setAccentColor(0x5865F2)
+        .addTextDisplayComponents(
+            new TextDisplayBuilder().setContent(text)
+        );
+}
+
 module.exports = {
     name: 'interactionCreate',
     async execute(interaction, client) {
@@ -73,10 +90,12 @@ module.exports = {
                 await command.execute(interaction, client);
             } catch (error) {
                 console.error(error);
-                await interaction.reply({
-                    content: '❌ Hubo un error ejecutando este comando.',
-                    flags: [MessageFlags.Ephemeral]
-                });
+                if (!interaction.replied && !interaction.deferred) {
+                    await interaction.reply({
+                        content: '❌ Hubo un error ejecutando este comando.',
+                        flags: MessageFlags.Ephemeral
+                    });
+                }
             }
         }
     }
@@ -90,21 +109,27 @@ async function handleModalSubmit(interaction, client) {
         const tipo = tempData.get(`tipo_${interaction.user.id}`);
 
         if (tipo === 'solo_mensaje') {
-            const { row } = createConfirmView();
+            const { container } = createConfirmView();
             tempData.set(`mensaje_${interaction.user.id}`, mensaje);
             tempData.set(`estado_${interaction.user.id}`, 'confirmar_mensaje');
 
+            // Añadimos la preview al container
+            const previewContainer = simpleTextContainer(
+                `**Vista Previa:**\n${truncar(mensaje)}`
+            );
+            previewContainer.addActionRowComponents(
+                container.components[container.components.length - 1]
+            );
+
             await interaction.reply({
-                content: truncar(`**Vista Previa:**\n${mensaje}`),
-                components: [row],
-                flags: [MessageFlags.Ephemeral]
+                components: [previewContainer],
+                flags: V2 | MessageFlags.Ephemeral
             });
         } else if (tipo === 'mensaje_embed') {
             tempData.set(`mensaje_${interaction.user.id}`, mensaje);
             await interaction.reply({
-                content: truncar(`✅ Mensaje guardado.\n\n**Vista previa:**\n${mensaje}\n\n👇 Ahora presiona el botón para crear el embed:`),
                 components: [createContinueView('imagenes')],
-                flags: [MessageFlags.Ephemeral]
+                flags: V2 | MessageFlags.Ephemeral
             });
             tempData.set(`estado_${interaction.user.id}`, 'embed_parte1_ambos');
         }
@@ -132,7 +157,7 @@ async function handleModalSubmit(interaction, client) {
         }
         tempData.set(`imagenes_buffers_${interaction.user.id}`, imagenesBuffers);
 
-        let previewContent = `**Vista Previa:**\n${mensaje}`;
+        let previewContent = `**Vista Previa:**\n${truncar(mensaje)}`;
         if (imagenesBuffers.length > 0) {
             previewContent += `\n\n🖼️ **Imágenes adjuntas (${imagenesBuffers.length}):**`;
             imagenesBuffers.forEach((img, i) => {
@@ -140,11 +165,15 @@ async function handleModalSubmit(interaction, client) {
             });
         }
 
-        const { row } = createConfirmView();
+        const { container } = createConfirmView();
+        const previewContainer = simpleTextContainer(previewContent);
+        previewContainer.addActionRowComponents(
+            container.components[container.components.length - 1]
+        );
+
         await interaction.reply({
-            content: truncar(previewContent),
-            components: [row],
-            flags: [MessageFlags.Ephemeral]
+            components: [previewContainer],
+            flags: V2 | MessageFlags.Ephemeral
         });
         return;
     }
@@ -160,8 +189,13 @@ async function handleModalSubmit(interaction, client) {
 
         tempData.set(`embed_data_${interaction.user.id}`, data);
         const estado = tempData.get(`estado_${interaction.user.id}`);
-        const embed = crearEmbed(data);
-        const continueRow = createContinueView('imagenes');
+        const embedContainer = crearEmbed(data);
+
+        // Añadimos los botones de continuar al mismo container
+        const continueContainer = createContinueView('imagenes');
+        for (const comp of continueContainer.components) {
+            embedContainer.addActionRowComponents(comp);
+        }
 
         if (estado === 'embed_parte1_ambos') {
             tempData.set(`estado_${interaction.user.id}`, 'embed_parte2_ambos');
@@ -172,10 +206,8 @@ async function handleModalSubmit(interaction, client) {
         }
 
         await interaction.reply({
-            content: '**📝 Paso 1/3 Completado**\n¿Quieres agregar imágenes?',
-            embeds: [embed],
-            components: [continueRow],
-            flags: [MessageFlags.Ephemeral]
+            components: [embedContainer],
+            flags: V2 | MessageFlags.Ephemeral
         });
         return;
     }
@@ -220,14 +252,12 @@ async function handleModalSubmit(interaction, client) {
         tempData.set(`embed_data_${interaction.user.id}`, data);
         tempData.set(`imagenes_buffers_${interaction.user.id}`, imagenesBuffers);
         const estado = tempData.get(`estado_${interaction.user.id}`);
-        const embed = crearEmbed(data);
-        const continueRow = createContinueView('campos');
+        const embedContainer = crearEmbed(data);
 
-        let content = '**🖼️ Paso 2/3 Completado**';
-        if (imagenesBuffers.length > 0) {
-            content += `\n✅ ${imagenesBuffers.length} imagen(es) descargada(s)`;
+        const continueContainer = createContinueView('campos');
+        for (const comp of continueContainer.components) {
+            embedContainer.addActionRowComponents(comp);
         }
-        content += '\n¿Quieres agregar campos adicionales?';
 
         if (estado === 'embed_parte2_ambos') {
             tempData.set(`estado_${interaction.user.id}`, 'embed_parte3_ambos');
@@ -238,10 +268,8 @@ async function handleModalSubmit(interaction, client) {
         }
 
         await interaction.reply({
-            content: content,
-            embeds: [embed],
-            components: [continueRow],
-            flags: [MessageFlags.Ephemeral]
+            components: [embedContainer],
+            flags: V2 | MessageFlags.Ephemeral
         });
         return;
     }
@@ -330,11 +358,15 @@ async function handleButton(interaction, client) {
             tempData.set(`estado_${interaction.user.id}`, 'embed_parte3');
         }
 
+        const embedContainer = crearEmbed(data);
+        const continueContainer = createContinueView('campos');
+        for (const comp of continueContainer.components) {
+            embedContainer.addActionRowComponents(comp);
+        }
+
         await interaction.reply({
-            content: '**🖼️ Paso 2/3 Completado**\n¿Quieres agregar campos adicionales?',
-            embeds: [crearEmbed(data)],
-            components: [createContinueView('campos')],
-            flags: [MessageFlags.Ephemeral]
+            components: [embedContainer],
+            flags: V2 | MessageFlags.Ephemeral
         });
         return;
     }
@@ -361,9 +393,8 @@ async function handleButton(interaction, client) {
     if (customId === 'cancelar_envio') {
         limpiarDatosTemporales(interaction.user.id);
         await interaction.update({
-            content: '❌ Envío cancelado.',
-            components: [],
-            embeds: []
+            components: [simpleTextContainer('❌ Envío cancelado.')],
+            flags: V2
         });
         return;
     }
@@ -379,7 +410,7 @@ async function iniciarCollectorImagenes(interaction, client) {
 
     await interaction.reply({
         content: '⏳ Esperando que subas las imágenes... Revisa el mensaje que acabo de enviar en el canal.',
-        flags: [MessageFlags.Ephemeral]
+        flags: MessageFlags.Ephemeral
     });
 
     const filter = m => {
@@ -432,7 +463,7 @@ async function iniciarCollectorImagenes(interaction, client) {
         if (reason === 'time') {
             await interaction.followUp({
                 content: '⏰ **Tiempo agotado.** No se recibieron imágenes. Intenta de nuevo con `/anuncio`.',
-                flags: [MessageFlags.Ephemeral]
+                flags: MessageFlags.Ephemeral
             });
             return;
         }
@@ -440,7 +471,7 @@ async function iniciarCollectorImagenes(interaction, client) {
         if (imagenesBuffers.length === 0) {
             await interaction.followUp({
                 content: '❌ No se recibieron imágenes válidas. Intenta de nuevo con `/anuncio`.',
-                flags: [MessageFlags.Ephemeral]
+                flags: MessageFlags.Ephemeral
             });
             return;
         }
@@ -454,11 +485,15 @@ async function iniciarCollectorImagenes(interaction, client) {
             previewContent += `\n${i + 1}. ${img.name} (${(img.buffer.length / 1024).toFixed(1)} KB)`;
         });
 
-        const { row } = createConfirmView();
+        const { container } = createConfirmView();
+        const previewContainer = simpleTextContainer(truncar(previewContent));
+        previewContainer.addActionRowComponents(
+            container.components[container.components.length - 1]
+        );
+
         await interaction.followUp({
-            content: truncar(previewContent),
-            components: [row],
-            flags: [MessageFlags.Ephemeral]
+            components: [previewContainer],
+            flags: V2 | MessageFlags.Ephemeral
         });
     });
 }
@@ -475,42 +510,45 @@ function limpiarDatosTemporales(userId) {
 }
 
 async function mostrarPreviewFinal(interaction, embedData) {
-    const embed = crearEmbed(embedData);
+    const embedContainer = crearEmbed(embedData);
     const tipo = tempData.get(`tipo_${interaction.user.id}`);
     const mensaje = tempData.get(`mensaje_${interaction.user.id}`);
     const imagenesBuffers = tempData.get(`imagenes_buffers_${interaction.user.id}`) || [];
-    const { row } = createConfirmView();
+    const { container } = createConfirmView();
 
-    let content = '**Vista Previa Final:**';
+    let headerText = '**Vista Previa Final:**';
 
     if (tipo === 'mensaje_embed' && mensaje) {
-        content = `**Vista Previa Final:**\n${mensaje}`;
+        headerText = `**Vista Previa Final:**\n${mensaje}`;
         tempData.set(`estado_${interaction.user.id}`, 'confirmar_ambos');
     } else if (tipo === 'mensaje_imagenes' && mensaje) {
-        content = `**Vista Previa Final:**\n${mensaje}`;
+        headerText = `**Vista Previa Final:**\n${mensaje}`;
         if (imagenesBuffers.length > 0) {
-            content += `\n\n🖼️ **${imagenesBuffers.length} imagen(es) adjunta(s)**`;
+            headerText += `\n\n🖼️ **${imagenesBuffers.length} imagen(es) adjunta(s)**`;
         }
         tempData.set(`estado_${interaction.user.id}`, 'confirmar_mensaje_imagenes');
     } else if (tipo === 'mensaje_imagenes_locales') {
         if (imagenesBuffers.length > 0) {
-            content += `\n📎 **${imagenesBuffers.length} imagen(es) local(es) adjunta(s)**`;
+            headerText += `\n📎 **${imagenesBuffers.length} imagen(es) local(es) adjunta(s)**`;
         }
         tempData.set(`estado_${interaction.user.id}`, 'confirmar_mensaje_imagenes');
     } else if (tipo === 'embed_imagenes') {
         if (imagenesBuffers.length > 0) {
-            content += `\n🖼️ **${imagenesBuffers.length} imagen(es) adjunta(s)**`;
+            headerText += `\n🖼️ **${imagenesBuffers.length} imagen(es) adjunta(s)**`;
         }
         tempData.set(`estado_${interaction.user.id}`, 'confirmar_embed_imagenes');
     } else {
         tempData.set(`estado_${interaction.user.id}`, 'confirmar_embed');
     }
 
+    const headerContainer = simpleTextContainer(truncar(headerText));
+    headerContainer.addActionRowComponents(
+        container.components[container.components.length - 1]
+    );
+
     await interaction.reply({
-        content: truncar(content),
-        embeds: [embed],
-        components: [row],
-        flags: [MessageFlags.Ephemeral]
+        components: [embedContainer, headerContainer],
+        flags: V2 | MessageFlags.Ephemeral
     });
 }
 
@@ -530,32 +568,31 @@ async function enviarAnuncios(interaction, client) {
         ephemeral: false
     });
 
-    let embedObj = null;
+    let embedContainer = null;
+    let filesArray = [];
     if (embedData) {
         const embedDataCopy = { ...embedData };
         const tieneImagenPrincipal = imagenesBuffers.find(img => img.name.startsWith('imagen_principal'));
         if (tieneImagenPrincipal && embedDataCopy.imagen) {
             embedDataCopy.imagen = `attachment://${tieneImagenPrincipal.name}`;
         }
-        embedObj = crearEmbed(embedDataCopy);
+        embedContainer = crearEmbed(embedDataCopy);
     }
 
     for (const uid of consentidos) {
         const user = await client.users.fetch(uid).catch(() => null);
-
-        if (!user) {
-            fallidos++;
-            continue;
-        }
+        if (!user) { fallidos++; continue; }
 
         try {
-            const messageOptions = {};
+            const messageOptions = { flags: V2 };
+            const components = [];
 
+            // Construir el contenido V2 según el tipo
             if (tipo === 'solo_mensaje') {
-                messageOptions.content = mensaje;
+                components.push(simpleTextContainer(mensaje));
             }
             else if (tipo === 'mensaje_imagenes') {
-                messageOptions.content = mensaje;
+                if (mensaje) components.push(simpleTextContainer(mensaje));
                 if (imagenesBuffers.length > 0) {
                     const files = [];
                     for (let i = 0; i < Math.min(imagenesBuffers.length, 10); i++) {
@@ -566,6 +603,7 @@ async function enviarAnuncios(interaction, client) {
                 }
             }
             else if (tipo === 'mensaje_imagenes_locales') {
+                if (mensaje) components.push(simpleTextContainer(mensaje));
                 if (imagenesBuffers.length > 0) {
                     const files = [];
                     for (let i = 0; i < Math.min(imagenesBuffers.length, 10); i++) {
@@ -574,13 +612,12 @@ async function enviarAnuncios(interaction, client) {
                     }
                     if (files.length > 0) messageOptions.files = files;
                 }
-                if (mensaje) messageOptions.content = mensaje;
             }
             else if (tipo === 'solo_embed') {
-                messageOptions.embeds = [embedObj];
+                if (embedContainer) components.push(embedContainer);
             }
             else if (tipo === 'embed_imagenes') {
-                if (embedObj) messageOptions.embeds = [embedObj];
+                if (embedContainer) components.push(embedContainer);
                 if (imagenesBuffers.length > 0) {
                     const files = [];
                     for (let i = 0; i < Math.min(imagenesBuffers.length, 10); i++) {
@@ -591,9 +628,11 @@ async function enviarAnuncios(interaction, client) {
                 }
             }
             else if (tipo === 'mensaje_embed') {
-                messageOptions.content = mensaje;
-                if (embedObj) messageOptions.embeds = [embedObj];
+                if (mensaje) components.push(simpleTextContainer(mensaje));
+                if (embedContainer) components.push(embedContainer);
             }
+
+            messageOptions.components = components;
 
             await user.send(messageOptions);
             enviados++;

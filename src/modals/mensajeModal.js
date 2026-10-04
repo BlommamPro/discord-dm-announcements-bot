@@ -1,30 +1,43 @@
-const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
+const {
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
+    LabelBuilder
+} = require('discord.js');
 
-function createMensajeModal(withImages = false) {
+function createMensajeModal(conImagenes = false) {
     const modal = new ModalBuilder()
-        .setCustomId(withImages ? 'modal_mensaje_imagenes' : 'modal_mensaje')
-        .setTitle(withImages ? '📝🖼️ Crear Mensaje con Imágenes' : '📝 Crear Mensaje');
+        .setCustomId(conImagenes ? 'modal_mensaje_imagenes' : 'modal_mensaje')
+        .setTitle('📝 Escribir Mensaje');
 
     const mensajeInput = new TextInputBuilder()
         .setCustomId('mensaje_input')
-        .setLabel('Mensaje')
         .setStyle(TextInputStyle.Paragraph)
-        .setPlaceholder('Escribe el mensaje que se enviará...')
+        .setPlaceholder('Escribe el mensaje...')
         .setRequired(true)
         .setMaxLength(2000);
 
-    modal.addComponents(new ActionRowBuilder().addComponents(mensajeInput));
+    const mensajeLabel = new LabelBuilder()
+        .setLabel('Mensaje')
+        .setDescription('Texto que se enviará a los usuarios')
+        .setTextInputComponent(mensajeInput);
 
-    if (withImages) {
+    modal.addLabelComponents(mensajeLabel);
+
+    if (conImagenes) {
         const imagenesInput = new TextInputBuilder()
             .setCustomId('imagenes_input')
-            .setLabel('URLs de imágenes (una por línea)')
             .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder('https://ejemplo.com/img1.png\nhttps://ejemplo.com/img2.png\nhttps://ejemplo.com/img3.gif')
+            .setPlaceholder('Una URL por línea:\nhttps://ejemplo.com/img1.png\nhttps://ejemplo.com/img2.jpg')
             .setRequired(false)
             .setMaxLength(2000);
 
-        modal.addComponents(new ActionRowBuilder().addComponents(imagenesInput));
+        const imagenesLabel = new LabelBuilder()
+            .setLabel('URLs de imágenes (opcional)')
+            .setDescription('Una URL por línea')
+            .setTextInputComponent(imagenesInput);
+
+        modal.addLabelComponents(imagenesLabel);
     }
 
     return modal;
