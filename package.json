@@ -6,8 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "deploy": "node deploy-commands.js",
-    "refresh": "node refresh-commands.js"
+    "cmd:deploy": "node deploy-commands.js",
+    "cmd:refresh": "node refresh-commands.js"
   },
   "keywords": [
     "discord",
