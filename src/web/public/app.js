@@ -4,7 +4,7 @@
 const MAX_BLOCKS = 20;
 const MAX_IMAGES_PER_GALLERY = 5;
 const MAX_TOTAL_IMAGES = 10;       // Límite global (Discord: máx 10 attachments)
-const MAX_IMAGE_SIZE_MB = 3;
+const MAX_IMAGE_SIZE_MB = 8;
 const LOCALSTORAGE_KEY = 'anuncio_blocks_v2';
 
 // ============================================================
