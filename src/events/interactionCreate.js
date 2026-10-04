@@ -8,7 +8,7 @@ module.exports = {
         // ============================================================
         const expectedGuildId = process.env.GUILD_ID;
 
-        // Ignorar DMs (no tienen guildId)
+        // Ignorar DMs
         if (!interaction.guildId) {
             if (interaction.isRepliable()) {
                 await interaction.reply({
@@ -19,7 +19,7 @@ module.exports = {
             return;
         }
 
-        // Ignorar interacciones de otros guilds SIN responder
+        // Ignorar interacciones de otros guilds
         if (expectedGuildId && interaction.guildId !== expectedGuildId) {
             console.warn(`⚠️ Interacción ignorada (guild ${interaction.guildId}):`, interaction.type);
             return;

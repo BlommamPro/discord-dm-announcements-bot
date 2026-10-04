@@ -14,33 +14,27 @@ const BATCH_PAUSE_MS = 5000;
 const MAX_CONSECUTIVE_FAILURES = 5;
 
 /**
- * Verifica si un archivo /uploads/xxx existe en disco.
+ * Verifica si una imagen local existe.
  */
 function uploadExists(url) {
-    if (!url || !url.startsWith('/uploads/')) return true; // URL externa → siempre válida
+    if (!url || !url.startsWith('/uploads/')) return true;
     const fn = path.basename(url);
     const filePath = path.join(UPLOAD_DIR, fn);
     return fs.existsSync(filePath);
 }
 
 /**
- * Limpia los bloques eliminando imágenes que ya no existen.
- * Devuelve una copia de los bloques (no modifica el original).
+ * Limpia los bloques eliminando imágenes inexistentes.
  */
 function sanitizeBlocks(blocks) {
     return blocks.map(block => {
         const b = { ...block };
-
         if (b.type === 'image' && b.url) {
-            if (!uploadExists(b.url)) {
-                b.url = ''; // Imagen desaparecida → bloque vacío
-            }
+            if (!uploadExists(b.url)) b.url = '';
         }
-
         if (b.type === 'gallery' && Array.isArray(b.images)) {
             b.images = b.images.filter(uploadExists);
         }
-
         return b;
     });
 }
@@ -58,7 +52,7 @@ function buildPayload(blocks, color) {
             const filePath = path.join(UPLOAD_DIR, fn);
             if (!fs.existsSync(filePath)) {
                 console.warn(`⚠️ Imagen no encontrada, se ignora: ${fn}`);
-                return null; // ← Ignorar en lugar de referenciar
+                return null;
             }
             filesMap.set(fn, filePath);
             return `attachment://${fn}`;
@@ -67,20 +61,40 @@ function buildPayload(blocks, color) {
     };
 
     const container = buildFromBlocks(blocks, color, resolveImage, filesMap);
-
     return { container, filesMap };
 }
 
 /**
- * Envía el anuncio con batching para 3000 usuarios.
+ * Borra una lista de archivos por nombre. Ignora los que ya no existen.
+ * Devuelve { borradas, noEncontradas }.
  */
+function deleteFiles(filenames) {
+    let borradas = 0;
+    const noEncontradas = [];
+
+    for (const filename of filenames) {
+        const filePath = path.join(UPLOAD_DIR, filename);
+        try {
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                borradas++;
+            } else {
+                noEncontradas.push(filename);
+            }
+        } catch (err) {
+            console.warn(`⚠️ No se pudo borrar ${filename}:`, err.message);
+        }
+    }
+
+    return { borradas, noEncontradas };
+}
+
 async function sendAnnouncement(client, opts, onProgress) {
     const consentidos = JSON.parse(fs.readFileSync(CONSENTS_PATH, 'utf-8'));
 
-    // 1. Sanitizar bloques (quitar imágenes que ya no existen)
+    // 1. Sanitizar bloques
     const sanitizedBlocks = sanitizeBlocks(opts.blocks);
-    const totalImagesRemoved = opts.blocks.length - sanitizedBlocks.length;
-    
+
     // 2. Construir payload
     const { container, filesMap } = buildPayload(sanitizedBlocks, opts.color);
 
@@ -88,11 +102,14 @@ async function sendAnnouncement(client, opts, onProgress) {
         throw new Error('No se pudo construir el anuncio');
     }
 
+    // Lista de archivos a borrar al final (SIEMPRE)
+    const filesToDelete = Array.from(filesMap.keys());
+
     const total = consentidos.length;
     let enviados = 0;
     let fallidos = 0;
 
-    // Tracker de fallos consecutivos
+    // Tracker de fallos
     let failedTracker = {};
     if (fs.existsSync(FAILED_TRACKER_PATH)) {
         try {
@@ -100,7 +117,7 @@ async function sendAnnouncement(client, opts, onProgress) {
         } catch { failedTracker = {}; }
     }
 
-    // Verificar que al menos hay UN archivo válido
+    // Archivos válidos (los que existen realmente)
     const validFiles = [];
     for (const [filename, filePath] of filesMap) {
         if (fs.existsSync(filePath)) {
@@ -112,51 +129,69 @@ async function sendAnnouncement(client, opts, onProgress) {
         throw new Error('Las imágenes del anuncio ya no existen en el servidor. Vuelve a subirlas.');
     }
 
-    for (let i = 0; i < consentidos.length; i++) {
-        const userId = consentidos[i];
+    // ============================================================
+    // ENVÍO CON TRY/FINALLY: el borrado se ejecuta SIEMPRE
+    // ============================================================
+    try {
+        for (let i = 0; i < consentidos.length; i++) {
+            const userId = consentidos[i];
 
-        try {
-            const user = await client.users.fetch(userId).catch(() => null);
+            try {
+                const user = await client.users.fetch(userId).catch(() => null);
 
-            if (!user) {
+                if (!user) {
+                    fallidos++;
+                    failedTracker[userId] = (failedTracker[userId] || 0) + 1;
+                    continue;
+                }
+
+                const payload = {
+                    components: [container.toJSON ? container.toJSON() : container],
+                    flags: getV2Flags()
+                };
+
+                // Recrear attachments por cada envío (no son reutilizables)
+                if (validFiles.length > 0) {
+                    payload.files = validFiles.map(({ filename, filePath }) =>
+                        new AttachmentBuilder(filePath, { name: filename })
+                    );
+                }
+
+                await user.send(payload);
+                enviados++;
+                delete failedTracker[userId];
+            } catch (err) {
+                console.warn(`⚠️ Falló ${userId}:`, err.message);
                 fallidos++;
                 failedTracker[userId] = (failedTracker[userId] || 0) + 1;
-                continue;
             }
 
-            // Construir payload fresco por cada usuario
-            const payload = {
-                components: [container.toJSON ? container.toJSON() : container],
-                flags: getV2Flags()
-            };
-
-            // Recrear attachments por cada envío
-            if (validFiles.length > 0) {
-                const attachments = validFiles.map(({ filename, filePath }) =>
-                    new AttachmentBuilder(filePath, { name: filename })
-                );
-                payload.files = attachments;
+            if (onProgress) {
+                onProgress({ enviados, fallidos, total, procesados: i + 1 });
             }
 
-            await user.send(payload);
-            enviados++;
-            delete failedTracker[userId];
-        } catch (err) {
-            console.warn(`⚠️ Falló ${userId}:`, err.message);
-            fallidos++;
-            failedTracker[userId] = (failedTracker[userId] || 0) + 1;
+            await new Promise(r => setTimeout(r, RATE_LIMIT_MS));
+
+            // Pausa cada BATCH_SIZE envíos
+            if ((i + 1) % BATCH_SIZE === 0 && i + 1 < consentidos.length) {
+                console.log(`⏸️ Pausa de lote (${i + 1}/${total})`);
+                await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
+            }
         }
+    } finally {
+        // ============================================================
+        // BORRADO SIEMPRE — incluso si el envío falla
+        // ============================================================
+        if (filesToDelete.length > 0) {
+            console.log(`🗑️ Borrando ${filesToDelete.length} imagen(es) del anuncio...`);
+            const { borradas, noEncontradas } = deleteFiles(filesToDelete);
 
-        if (onProgress) {
-            onProgress({ enviados, fallidos, total, procesados: i + 1 });
-        }
-
-        await new Promise(r => setTimeout(r, RATE_LIMIT_MS));
-
-        // Pausa cada BATCH_SIZE envíos
-        if ((i + 1) % BATCH_SIZE === 0 && i + 1 < consentidos.length) {
-            console.log(`⏸️ Pausa de lote (${i + 1}/${total})`);
-            await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
+            if (borradas > 0) {
+                console.log(`✅ Borradas ${borradas} imagen(es)`);
+            }
+            if (noEncontradas.length > 0) {
+                console.warn(`⚠️ ${noEncontradas.length} imagen(es) ya no existían (posible doble envío o borrado manual)`);
+            }
         }
     }
 
@@ -175,22 +210,7 @@ async function sendAnnouncement(client, opts, onProgress) {
     if (toRemove.length > 0) {
         const cleaned = consentidos.filter(uid => !toRemove.includes(uid));
         fs.writeFileSync(CONSENTS_PATH, JSON.stringify(cleaned, null, 2));
-        console.log(`🧹 Eliminados ${toRemove.length} usuarios inactivos`);
-    }
-
-    // Borrado de imágenes SOLO después de enviar a todos
-    try {
-        let borradas = 0;
-        for (const [filename] of filesMap) {
-            const filePath = path.join(UPLOAD_DIR, filename);
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
-                borradas++;
-            }
-        }
-        if (borradas > 0) console.log(`🗑️ Borradas ${borradas} imagen(es)`);
-    } catch (err) {
-        console.warn('⚠️ Error borrando imágenes:', err.message);
+        console.log(`🧹 Eliminados ${toRemove.length} usuarios inactivos (5+ fallos)`);
     }
 
     return { enviados, fallidos, total };

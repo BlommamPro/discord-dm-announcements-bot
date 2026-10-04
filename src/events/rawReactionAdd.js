@@ -8,7 +8,7 @@ module.exports = {
         // Ignorar reacciones en DMs
         if (!reaction.message.guildId) return;
 
-        // Ignorar reacciones en otros guilds (silenciosamente)
+        // Ignorar reacciones fuera del guild configurado
         const expectedGuildId = process.env.GUILD_ID;
         if (expectedGuildId && reaction.message.guildId !== expectedGuildId) return;
 

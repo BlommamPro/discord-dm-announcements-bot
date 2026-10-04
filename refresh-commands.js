@@ -1,8 +1,9 @@
 // ============================================================
-// deploy-commands.js
-// Registra los comandos actuales de src/commands/ en el GUILD.
-// No borra nada previamente. Es rápido y seguro para uso diario.
-// Uso: node deploy-commands.js
+// refresh-commands.js
+// Borra TODOS los comandos (globales + guild) y registra los
+// comandos actuales de src/commands/ en el GUILD.
+// Úsalo solo cuando haya comandos fantasma o quieras limpiar.
+// Uso: node refresh-commands.js
 // ============================================================
 
 const { REST, Routes } = require('discord.js');
@@ -61,31 +62,64 @@ for (const file of commandFiles) {
 console.log(`\n📋 Total de comandos a registrar: ${commands.length}\n`);
 
 // ============================================================
-// 2. REGISTRAR
+// 2. REFRESH COMPLETO
 // ============================================================
 (async () => {
     try {
-        console.log('📤 Registrando comandos en el GUILD...');
+        // --- 2.1 Borrar comandos GLOBALES ---
+        console.log('🗑️  Borrando comandos GLOBALES...');
+        await rest.put(
+            Routes.applicationCommands(process.env.CLIENT_ID),
+            { body: [] }
+        );
+        console.log('   ✅ Globales borrados\n');
 
+        // --- 2.2 Borrar comandos del GUILD ---
+        console.log('🗑️  Borrando comandos del GUILD...');
+        await rest.put(
+            Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+            { body: [] }
+        );
+        console.log('   ✅ Guild borrados\n');
+
+        // --- 2.3 Pausa breve ---
+        await new Promise(r => setTimeout(r, 2000));
+
+        // --- 2.4 Registrar comandos nuevos ---
+        console.log('📤 Registrando comandos nuevos en el GUILD...');
         const data = await rest.put(
             Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
             { body: commands }
         );
-
         console.log(`   ✅ ${data.length} comandos registrados\n`);
 
-        // Verificar
-        console.log('🔍 Comandos actuales en el GUILD:');
-        data.forEach(c => console.log(`     /${c.name}`));
+        // --- 2.5 Verificar ---
+        console.log('🔍 Verificando estado final...\n');
+        const guildCommands = await rest.get(
+            Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID)
+        );
+        const globalCommands = await rest.get(
+            Routes.applicationCommands(process.env.CLIENT_ID)
+        );
 
-        console.log('\n✅ DEPLOY COMPLETADO');
+        console.log('📋 Estado actual:');
+        console.log(`   Guild (${guildCommands.length}):`);
+        guildCommands.forEach(c => console.log(`     /${c.name}`));
+        console.log(`   Globales (${globalCommands.length}):`);
+        if (globalCommands.length === 0) {
+            console.log('     (ninguno)');
+        } else {
+            globalCommands.forEach(c => console.log(`     /${c.name}`));
+        }
+
+        console.log('\n✅ REFRESH COMPLETADO');
         console.log('💡 Si no ves los comandos en Discord:');
         console.log('   1. Cierra Discord completamente (bandeja → Quit)');
         console.log('   2. Ábrelo de nuevo');
         console.log('   3. Escribe / en cualquier canal\n');
 
     } catch (error) {
-        console.error('\n❌ Error durante el deploy:');
+        console.error('\n❌ Error durante el refresh:');
         console.error(error);
 
         if (error.code === 50035) {

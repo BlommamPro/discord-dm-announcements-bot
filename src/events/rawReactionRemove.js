@@ -5,8 +5,10 @@ module.exports = {
     async execute(reaction, user, client) {
         if (user.bot) return;
 
+        // Ignorar reacciones en DMs
         if (!reaction.message.guildId) return;
 
+        // Ignorar reacciones fuera del guild configurado
         const expectedGuildId = process.env.GUILD_ID;
         if (expectedGuildId && reaction.message.guildId !== expectedGuildId) return;
 
