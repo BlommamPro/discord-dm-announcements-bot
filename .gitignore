@@ -1,9 +1,63 @@
+# ============================================================
+# DEPENDENCIAS
+# ============================================================
+# node_modules NUNCA se sube. Es enorme (cientos de MB) y se
+# regenera con `pnpm install` en cualquier máquina/servidor.
 node_modules/
+
+# ============================================================
+# VARIABLES DE ENTORNO (¡CRÍTICO!)
+# ============================================================
+# .env contiene el TOKEN del bot, contraseñas y secrets.
+# Si se sube a GitHub, cualquiera puede controlar tu bot.
+# En Wispbyte, estas variables van en el panel (Environment Variables).
 .env
+.env.local
+.env.*.local
+
+# ============================================================
+# DATOS DINÁMICOS (se generan en tiempo de ejecución)
+# ============================================================
+# Historial de anuncios enviados (crece con el uso)
+historial.json
 config.json
 consentidos.json
-*.log
+
+
+# Tracking de usuarios que fallan envíos (se regenera solo)
+failed_users.json
+
+# ============================================================
+# IMÁGENES SUBIDAS (temporales, se borran tras enviar)
+# ============================================================
+# Todo lo que está en uploads/ es temporal. NO subirlo a Git
+# ni al ZIP de Wispbyte. Se regenera solo.
 src/web/public/uploads/*
 !src/web/public/uploads/.gitkeep
-historial.json
-failed_users.json
+
+# ============================================================
+# SISTEMA OPERATIVO
+# ============================================================
+# Archivos que genera el SO y no deben compartirse
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============================================================
+# EDITORES / IDE
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================================================
+# LOGS Y CACHÉ
+# ============================================================
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.npm/
+.pnpm-store/
+.cache/
