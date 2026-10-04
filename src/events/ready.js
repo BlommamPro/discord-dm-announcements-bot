@@ -1,20 +1,25 @@
-const { syncConsentimiento } = require('../utils/syncConsentimiento');
-
 module.exports = {
-    name: 'clientReady',
+    name: 'ready',
     once: true,
     async execute(client) {
-        console.log(`Bot iniciado como: ${client.user.tag}`);
+        const expectedGuildId = process.env.GUILD_ID;
 
-        try {
-            const synced = await client.application.commands.set(
-                Array.from(client.commands.values()).map(cmd => cmd.data.toJSON())
-            );
-            console.log(`Comandos sincronizados: ${synced.size}`);
-        } catch (error) {
-            console.error('Error sincronizando comandos:', error.message);
+        if (!expectedGuildId) {
+            console.error('❌ Falta la variable GUILD_ID en .env');
+            return;
         }
 
-        await syncConsentimiento(client);
+        console.log(`🔒 Bot configurado para el guild: ${expectedGuildId}`);
+        console.log(`📊 Guilds actuales: ${client.guilds.cache.size}`);
+
+        // Solo advertir si hay guilds extra, pero NO salir
+        for (const [guildId, guild] of client.guilds.cache) {
+            if (guildId !== expectedGuildId) {
+                console.warn(`⚠️ Bot presente en guild NO autorizado: ${guild.name} (${guildId})`);
+                console.warn(`   → Los comandos y eventos serán ignorados en ese guild.`);
+            }
+        }
+
+        console.log(`✅ Bot conectado como ${client.user.tag}`);
     }
 };
