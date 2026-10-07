@@ -7,17 +7,29 @@ const UPLOAD_DIR = path.join(__dirname, '..', 'public', 'uploads');
 const CONSENTS_PATH = path.join(__dirname, '..', '..', '..', 'consentidos.json');
 const FAILED_TRACKER_PATH = path.join(__dirname, '..', '..', '..', 'failed_users.json');
 
-const RATE_LIMIT_MS = 1500;
-const BATCH_SIZE = 50;
-const BATCH_PAUSE_MS = 5000;
+// ============================================================
+// CONFIGURACIÓN ANTI-BANEO
+// ============================================================
+const RATE_LIMIT_MS = 2000;
+const BATCH_SIZE = 30;
+const BATCH_PAUSE_MS = 10000;
 const MAX_CONSECUTIVE_FAILURES = 5;
 
 const MAX_TOTAL_TEXT = 4000;
-const SAFETY_MARGIN = 100; // Margen para evitar pasarse por poco
+const SAFETY_MARGIN = 100;
 
-/**
- * Verifica si una imagen local existe.
- */
+const COOLDOWN_BETWEEN_ANNOUNCEMENTS_MS = 5 * 60 * 1000; // 5 minutos
+
+// ============================================================
+// ESTADO GLOBAL
+// ============================================================
+let sendingInProgress = false;
+let lastAnnouncementTime = 0;
+
+let adaptiveDelay = RATE_LIMIT_MS;
+const MAX_ADAPTIVE_DELAY = 30000;
+const MIN_ADAPTIVE_DELAY = 1500;
+
 function uploadExists(url) {
     if (!url || !url.startsWith('/uploads/')) return true;
     const fn = path.basename(url);
@@ -25,9 +37,6 @@ function uploadExists(url) {
     return fs.existsSync(filePath);
 }
 
-/**
- * Sanitiza los bloques eliminando imágenes inexistentes.
- */
 function sanitizeBlocks(blocks) {
     return blocks.map(block => {
         const b = { ...block };
@@ -41,9 +50,6 @@ function sanitizeBlocks(blocks) {
     });
 }
 
-/**
- * Divide un texto largo en chunks por párrafos/frases.
- */
 function splitText(text, maxLength = MAX_TOTAL_TEXT) {
     if (!text) return [];
     if (text.length <= maxLength) return [text];
@@ -75,32 +81,19 @@ function splitText(text, maxLength = MAX_TOTAL_TEXT) {
     return chunks;
 }
 
-/**
- * Calcula el tamaño de texto de un bloque.
- */
 function blockTextSize(block) {
     switch (block.type) {
-        case 'text':
-            return (block.content || '').length;
-        case 'title':
-            return (block.content || '').length + 2;
-        case 'field':
-            return (block.name || '').length + (block.value || '').length + 4;
-        case 'button':
-            return (block.label || '').length;
-        default:
-            return 0;
+        case 'text': return (block.content || '').length;
+        case 'title': return (block.content || '').length + 2;
+        case 'field': return (block.name || '').length + (block.value || '').length + 4;
+        case 'button': return (block.label || '').length;
+        default: return 0;
     }
 }
 
-/**
- * Pre-procesa los bloques: divide los que superen el límite individual.
- */
 function preprocessBlocks(blocks) {
     const result = [];
-
     for (const block of blocks) {
-        // Si es un bloque de texto y supera el límite, dividirlo
         if (block.type === 'text' && block.content && block.content.length > MAX_TOTAL_TEXT) {
             const chunks = splitText(block.content, MAX_TOTAL_TEXT - SAFETY_MARGIN);
             for (const chunk of chunks) {
@@ -114,13 +107,9 @@ function preprocessBlocks(blocks) {
             result.push(block);
         }
     }
-
     return result;
 }
 
-/**
- * Divide los bloques en páginas que no superen el límite de texto.
- */
 function paginateBlocks(blocks) {
     const pages = [];
     let currentPage = [];
@@ -139,16 +128,10 @@ function paginateBlocks(blocks) {
         currentTextSize += size;
     }
 
-    if (currentPage.length > 0) {
-        pages.push(currentPage);
-    }
-
+    if (currentPage.length > 0) pages.push(currentPage);
     return pages;
 }
 
-/**
- * Construye el payload V2 desde los bloques.
- */
 function buildPayload(blocks, color) {
     const filesMap = new Map();
 
@@ -192,146 +175,190 @@ function deleteFiles(filenames) {
     return { borradas, noEncontradas };
 }
 
-async function sendAnnouncement(client, opts, onProgress) {
-    const consentidos = JSON.parse(fs.readFileSync(CONSENTS_PATH, 'utf-8'));
-
-    // 1. Sanitizar bloques (imágenes inexistentes)
-    const sanitizedBlocks = sanitizeBlocks(opts.blocks);
-
-    // 2. Pre-procesar (dividir bloques de texto >4000)
-    const processedBlocks = preprocessBlocks(sanitizedBlocks);
-
-    // 3. Paginar
-    const pages = paginateBlocks(processedBlocks);
-
-    console.log(`📄 Anuncio dividido en ${pages.length} página(s)`);
-    pages.forEach((page, i) => {
-        const totalSize = page.reduce((sum, b) => sum + blockTextSize(b), 0);
-        console.log(`   Página ${i + 1}: ${page.length} bloques, ~${totalSize} caracteres`);
-    });
-
-    // 4. Construir payloads
-    const pagePayloads = pages.map(page => buildPayload(page, opts.color));
-
-    // Archivos a borrar
-    const allFilesToDelete = new Set();
-    pagePayloads.forEach(p => {
-        for (const fn of p.filesMap.keys()) {
-            allFilesToDelete.add(fn);
-        }
-    });
-
-    const total = consentidos.length;
-    let enviados = 0;
-    let fallidos = 0;
-
-    let failedTracker = {};
-    if (fs.existsSync(FAILED_TRACKER_PATH)) {
-        try {
-            failedTracker = JSON.parse(fs.readFileSync(FAILED_TRACKER_PATH, 'utf-8'));
-        } catch { failedTracker = {}; }
+function updateAdaptiveDelay() {
+    if (adaptiveDelay < MAX_ADAPTIVE_DELAY) {
+        adaptiveDelay = Math.min(adaptiveDelay * 1.5, MAX_ADAPTIVE_DELAY);
+        console.log(`📈 Delay adaptativo aumentado a ${adaptiveDelay}ms`);
     }
-
-    // ============================================================
-    // ENVÍO
-    // ============================================================
-    try {
-        for (let i = 0; i < consentidos.length; i++) {
-            const userId = consentidos[i];
-
-            try {
-                const user = await client.users.fetch(userId).catch(() => null);
-
-                if (!user) {
-                    fallidos++;
-                    failedTracker[userId] = (failedTracker[userId] || 0) + 1;
-                    continue;
-                }
-
-                let userFailed = false;
-                for (const { container, filesMap } of pagePayloads) {
-                    try {
-                        const payload = {
-                            components: [container.toJSON ? container.toJSON() : container],
-                            flags: getV2Flags()
-                        };
-
-                        const validFiles = [];
-                        for (const [filename, filePath] of filesMap) {
-                            if (fs.existsSync(filePath)) {
-                                validFiles.push({ filename, filePath });
-                            }
-                        }
-
-                        if (validFiles.length > 0) {
-                            payload.files = validFiles.map(({ filename, filePath }) =>
-                                new AttachmentBuilder(filePath, { name: filename })
-                            );
-                        }
-
-                        await user.send(payload);
-
-                        if (pagePayloads.length > 1) {
-                            await new Promise(r => setTimeout(r, 1000));
-                        }
-                    } catch (pageErr) {
-                        console.error(`⚠️ Error enviando página a ${userId}:`, pageErr.message);
-                        userFailed = true;
-                        break;
-                    }
-                }
-
-                if (userFailed) {
-                    fallidos++;
-                    failedTracker[userId] = (failedTracker[userId] || 0) + 1;
-                } else {
-                    enviados++;
-                    delete failedTracker[userId];
-                }
-            } catch (err) {
-                console.warn(`⚠️ Falló ${userId}:`, err.message);
-                fallidos++;
-                failedTracker[userId] = (failedTracker[userId] || 0) + 1;
-            }
-
-            if (onProgress) {
-                onProgress({ enviados, fallidos, total, procesados: i + 1 });
-            }
-
-            await new Promise(r => setTimeout(r, RATE_LIMIT_MS));
-
-            if ((i + 1) % BATCH_SIZE === 0 && i + 1 < consentidos.length) {
-                console.log(`⏸️ Pausa de lote (${i + 1}/${total})`);
-                await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
-            }
-        }
-    } finally {
-        if (allFilesToDelete.size > 0) {
-            console.log(`🗑️ Borrando ${allFilesToDelete.size} imagen(es)`);
-            const { borradas } = deleteFiles(Array.from(allFilesToDelete));
-            if (borradas > 0) {
-                console.log(`✅ Borradas ${borradas} imagen(es)`);
-            }
-        }
-    }
-
-    try {
-        fs.writeFileSync(FAILED_TRACKER_PATH, JSON.stringify(failedTracker, null, 2));
-    } catch (e) {
-        console.warn('⚠️ No se pudo guardar failed_users.json:', e.message);
-    }
-
-    const toRemove = Object.entries(failedTracker)
-        .filter(([_, count]) => count >= MAX_CONSECUTIVE_FAILURES)
-        .map(([uid]) => uid);
-
-    if (toRemove.length > 0) {
-        const cleaned = consentidos.filter(uid => !toRemove.includes(uid));
-        fs.writeFileSync(CONSENTS_PATH, JSON.stringify(cleaned, null, 2));
-        console.log(`🧹 Eliminados ${toRemove.length} usuarios inactivos`);
-    }
-
-    return { enviados, fallidos, total, pages: pages.length };
 }
 
-module.exports = { sendAnnouncement };
+function resetAdaptiveDelay() {
+    if (adaptiveDelay > MIN_ADAPTIVE_DELAY) {
+        adaptiveDelay = Math.max(adaptiveDelay * 0.9, MIN_ADAPTIVE_DELAY);
+    }
+}
+
+async function sendAnnouncement(client, opts, onProgress) {
+    // PROTECCIÓN 1: Lock global
+    if (sendingInProgress) {
+        throw new Error('Ya hay un anuncio siendo enviado. Espera a que termine.');
+    }
+
+    // PROTECCIÓN 2: Cooldown
+    const timeSinceLast = Date.now() - lastAnnouncementTime;
+    if (lastAnnouncementTime > 0 && timeSinceLast < COOLDOWN_BETWEEN_ANNOUNCEMENTS_MS) {
+        const remaining = Math.ceil((COOLDOWN_BETWEEN_ANNOUNCEMENTS_MS - timeSinceLast) / 1000);
+        throw new Error(`Espera ${remaining} segundos antes de enviar otro anuncio.`);
+    }
+
+    sendingInProgress = true;
+    lastAnnouncementTime = Date.now();
+    console.log(`🔒 Lock de envío ACTIVADO`);
+
+    try {
+        const consentidos = JSON.parse(fs.readFileSync(CONSENTS_PATH, 'utf-8'));
+        const sanitizedBlocks = sanitizeBlocks(opts.blocks);
+        const processedBlocks = preprocessBlocks(sanitizedBlocks);
+        const pages = paginateBlocks(processedBlocks);
+
+        console.log(`📄 Anuncio dividido en ${pages.length} página(s)`);
+
+        const pagePayloads = pages.map(page => buildPayload(page, opts.color));
+
+        const allFilesToDelete = new Set();
+        pagePayloads.forEach(p => {
+            for (const fn of p.filesMap.keys()) {
+                allFilesToDelete.add(fn);
+            }
+        });
+
+        const total = consentidos.length;
+        let enviados = 0;
+        let fallidos = 0;
+
+        let failedTracker = {};
+        if (fs.existsSync(FAILED_TRACKER_PATH)) {
+            try {
+                failedTracker = JSON.parse(fs.readFileSync(FAILED_TRACKER_PATH, 'utf-8'));
+            } catch { failedTracker = {}; }
+        }
+
+        try {
+            for (let i = 0; i < consentidos.length; i++) {
+                const userId = consentidos[i];
+
+                try {
+                    const user = await client.users.fetch(userId).catch(() => null);
+
+                    if (!user) {
+                        fallidos++;
+                        failedTracker[userId] = (failedTracker[userId] || 0) + 1;
+                        continue;
+                    }
+
+                    let userFailed = false;
+                    for (const { container, filesMap } of pagePayloads) {
+                        try {
+                            const payload = {
+                                components: [container.toJSON ? container.toJSON() : container],
+                                flags: getV2Flags()
+                            };
+
+                            const validFiles = [];
+                            for (const [filename, filePath] of filesMap) {
+                                if (fs.existsSync(filePath)) {
+                                    validFiles.push({ filename, filePath });
+                                }
+                            }
+
+                            if (validFiles.length > 0) {
+                                payload.files = validFiles.map(({ filename, filePath }) =>
+                                    new AttachmentBuilder(filePath, { name: filename })
+                                );
+                            }
+
+                            await user.send(payload);
+
+                            if (pagePayloads.length > 1) {
+                                await new Promise(r => setTimeout(r, 1500));
+                            }
+                        } catch (pageErr) {
+                            // PROTECCIÓN 3: Detección de 429
+                            if (pageErr.status === 429 || pageErr.code === 429) {
+                                const retryAfter = (pageErr.retry_after || pageErr.retryAfter || 5) * 1000;
+                                console.warn(`⚠️ RATE LIMIT detectado. Esperando ${retryAfter}ms...`);
+                                updateAdaptiveDelay();
+                                await new Promise(r => setTimeout(r, retryAfter));
+                                userFailed = true;
+                                break;
+                            }
+
+                            console.error(`⚠️ Error enviando página a ${userId}:`, pageErr.message);
+                            userFailed = true;
+                            break;
+                        }
+                    }
+
+                    if (userFailed) {
+                        fallidos++;
+                        failedTracker[userId] = (failedTracker[userId] || 0) + 1;
+                    } else {
+                        enviados++;
+                        delete failedTracker[userId];
+                        resetAdaptiveDelay();
+                    }
+                } catch (err) {
+                    console.warn(`⚠️ Falló ${userId}:`, err.message);
+                    fallidos++;
+                    failedTracker[userId] = (failedTracker[userId] || 0) + 1;
+                }
+
+                if (onProgress) {
+                    onProgress({ enviados, fallidos, total, procesados: i + 1 });
+                }
+
+                await new Promise(r => setTimeout(r, adaptiveDelay));
+
+                if ((i + 1) % BATCH_SIZE === 0 && i + 1 < consentidos.length) {
+                    console.log(`⏸️ Pausa de lote (${i + 1}/${total}) — delay actual: ${adaptiveDelay}ms`);
+                    await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
+                }
+            }
+        } finally {
+            if (allFilesToDelete.size > 0) {
+                console.log(`🗑️ Borrando ${allFilesToDelete.size} imagen(es)`);
+                const { borradas } = deleteFiles(Array.from(allFilesToDelete));
+                if (borradas > 0) {
+                    console.log(`✅ Borradas ${borradas} imagen(es)`);
+                }
+            }
+        }
+
+        try {
+            fs.writeFileSync(FAILED_TRACKER_PATH, JSON.stringify(failedTracker, null, 2));
+        } catch (e) {
+            console.warn('⚠️ No se pudo guardar failed_users.json:', e.message);
+        }
+
+        const toRemove = Object.entries(failedTracker)
+            .filter(([_, count]) => count >= MAX_CONSECUTIVE_FAILURES)
+            .map(([uid]) => uid);
+
+        if (toRemove.length > 0) {
+            const cleaned = consentidos.filter(uid => !toRemove.includes(uid));
+            fs.writeFileSync(CONSENTS_PATH, JSON.stringify(cleaned, null, 2));
+            console.log(`🧹 Eliminados ${toRemove.length} usuarios inactivos`);
+        }
+
+        return { enviados, fallidos, total, pages: pages.length };
+    } finally {
+        sendingInProgress = false;
+        console.log(`🔓 Lock de envío DESACTIVADO`);
+    }
+}
+
+function isSending() {
+    return sendingInProgress;
+}
+
+function getCooldownRemaining() {
+    const timeSinceLast = Date.now() - lastAnnouncementTime;
+    const remaining = Math.max(0, COOLDOWN_BETWEEN_ANNOUNCEMENTS_MS - timeSinceLast);
+    return Math.ceil(remaining / 1000);
+}
+
+module.exports = {
+    sendAnnouncement,
+    isSending,
+    getCooldownRemaining
+};

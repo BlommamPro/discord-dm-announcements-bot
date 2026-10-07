@@ -100,9 +100,6 @@ function countTotalImages(excludeBlockId = null) {
     return total;
 }
 
-/**
- * Calcula el tamaño de texto total del anuncio (respetando el límite de Discord).
- */
 function countTotalTextSize() {
     let total = 0;
     for (const block of blocks) {
@@ -525,9 +522,7 @@ async function sendAnnouncement() {
         return;
     }
 
-    // ============================================================
-    // VALIDAR LONGITUDES DE CAMPOS CRÍTICOS
-    // ============================================================
+    // Validar longitudes de campos críticos
     for (const block of blocks) {
         if (block.type === 'title' && block.content && block.content.length > MAX_TITLE_LENGTH) {
             document.getElementById('result').textContent =
@@ -551,9 +546,7 @@ async function sendAnnouncement() {
         }
     }
 
-    // ============================================================
-    // VALIDAR TEXTO TOTAL (límite de 4000 de Discord)
-    // ============================================================
+    // Validar texto total
     const totalTextSize = countTotalTextSize();
     if (totalTextSize > MAX_TEXT_LENGTH) {
         const pages = Math.ceil(totalTextSize / MAX_TEXT_LENGTH);
@@ -566,9 +559,7 @@ async function sendAnnouncement() {
         if (!continuar) return;
     }
 
-    // ============================================================
-    // VALIDAR IMÁGENES
-    // ============================================================
+    // Validar imágenes
     const totalImages = countTotalImages();
     if (totalImages > MAX_TOTAL_IMAGES) {
         document.getElementById('result').textContent =
@@ -592,6 +583,18 @@ async function sendAnnouncement() {
     });
 
     const data = await res.json();
+
+    // ============================================================
+    // MANEJAR 429 (rate limit, lock, cooldown)
+    // ============================================================
+    if (res.status === 429) {
+        document.getElementById('result').textContent = '⏸️ ' + data.error;
+        document.getElementById('result').className = 'error';
+        document.getElementById('send-btn').disabled = false;
+        document.getElementById('progress-container').style.display = 'none';
+        return;
+    }
+
     if (!res.ok) {
         document.getElementById('result').textContent = '❌ ' + data.error;
         document.getElementById('result').className = 'error';
@@ -620,6 +623,7 @@ async function sendAnnouncement() {
             document.getElementById('send-btn').disabled = false;
             evtSource.close();
 
+            // Limpiar bloques con imágenes locales
             blocks = blocks.map(block => {
                 if (block.type === 'image' && block.url && block.url.startsWith('/uploads/')) {
                     return { ...block, url: '' };
