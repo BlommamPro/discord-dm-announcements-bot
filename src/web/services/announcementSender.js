@@ -7,11 +7,13 @@ const UPLOAD_DIR = path.join(__dirname, '..', 'public', 'uploads');
 const CONSENTS_PATH = path.join(__dirname, '..', '..', '..', 'consentidos.json');
 const FAILED_TRACKER_PATH = path.join(__dirname, '..', '..', '..', 'failed_users.json');
 
-// Configuración optimizada para 3000 usuarios
 const RATE_LIMIT_MS = 1500;
 const BATCH_SIZE = 50;
 const BATCH_PAUSE_MS = 5000;
 const MAX_CONSECUTIVE_FAILURES = 5;
+
+const MAX_TOTAL_TEXT = 4000;
+const SAFETY_MARGIN = 100; // Margen para evitar pasarse por poco
 
 /**
  * Verifica si una imagen local existe.
@@ -24,7 +26,7 @@ function uploadExists(url) {
 }
 
 /**
- * Limpia los bloques eliminando imágenes inexistentes.
+ * Sanitiza los bloques eliminando imágenes inexistentes.
  */
 function sanitizeBlocks(blocks) {
     return blocks.map(block => {
@@ -40,7 +42,112 @@ function sanitizeBlocks(blocks) {
 }
 
 /**
- * Construye el payload V2 desde los bloques ya sanitizados.
+ * Divide un texto largo en chunks por párrafos/frases.
+ */
+function splitText(text, maxLength = MAX_TOTAL_TEXT) {
+    if (!text) return [];
+    if (text.length <= maxLength) return [text];
+
+    const chunks = [];
+    let remaining = text;
+
+    while (remaining.length > maxLength) {
+        let cutAt = -1;
+
+        cutAt = remaining.lastIndexOf('\n\n', maxLength);
+        if (cutAt === -1 || cutAt < maxLength * 0.5) {
+            cutAt = remaining.lastIndexOf('\n', maxLength);
+        }
+        if (cutAt === -1 || cutAt < maxLength * 0.5) {
+            cutAt = remaining.lastIndexOf('. ', maxLength);
+            if (cutAt !== -1) cutAt += 1;
+        }
+        if (cutAt === -1 || cutAt < maxLength * 0.5) {
+            cutAt = remaining.lastIndexOf(' ', maxLength);
+        }
+        if (cutAt === -1) cutAt = maxLength;
+
+        chunks.push(remaining.substring(0, cutAt).trim());
+        remaining = remaining.substring(cutAt).trim();
+    }
+
+    if (remaining.length > 0) chunks.push(remaining);
+    return chunks;
+}
+
+/**
+ * Calcula el tamaño de texto de un bloque.
+ */
+function blockTextSize(block) {
+    switch (block.type) {
+        case 'text':
+            return (block.content || '').length;
+        case 'title':
+            return (block.content || '').length + 2;
+        case 'field':
+            return (block.name || '').length + (block.value || '').length + 4;
+        case 'button':
+            return (block.label || '').length;
+        default:
+            return 0;
+    }
+}
+
+/**
+ * Pre-procesa los bloques: divide los que superen el límite individual.
+ */
+function preprocessBlocks(blocks) {
+    const result = [];
+
+    for (const block of blocks) {
+        // Si es un bloque de texto y supera el límite, dividirlo
+        if (block.type === 'text' && block.content && block.content.length > MAX_TOTAL_TEXT) {
+            const chunks = splitText(block.content, MAX_TOTAL_TEXT - SAFETY_MARGIN);
+            for (const chunk of chunks) {
+                result.push({
+                    ...block,
+                    id: `${block.id}_chunk_${result.length}`,
+                    content: chunk
+                });
+            }
+        } else {
+            result.push(block);
+        }
+    }
+
+    return result;
+}
+
+/**
+ * Divide los bloques en páginas que no superen el límite de texto.
+ */
+function paginateBlocks(blocks) {
+    const pages = [];
+    let currentPage = [];
+    let currentTextSize = 0;
+
+    for (const block of blocks) {
+        const size = blockTextSize(block);
+
+        if (currentTextSize + size > MAX_TOTAL_TEXT - SAFETY_MARGIN && currentPage.length > 0) {
+            pages.push(currentPage);
+            currentPage = [];
+            currentTextSize = 0;
+        }
+
+        currentPage.push(block);
+        currentTextSize += size;
+    }
+
+    if (currentPage.length > 0) {
+        pages.push(currentPage);
+    }
+
+    return pages;
+}
+
+/**
+ * Construye el payload V2 desde los bloques.
  */
 function buildPayload(blocks, color) {
     const filesMap = new Map();
@@ -64,10 +171,6 @@ function buildPayload(blocks, color) {
     return { container, filesMap };
 }
 
-/**
- * Borra una lista de archivos por nombre. Ignora los que ya no existen.
- * Devuelve { borradas, noEncontradas }.
- */
 function deleteFiles(filenames) {
     let borradas = 0;
     const noEncontradas = [];
@@ -92,24 +195,36 @@ function deleteFiles(filenames) {
 async function sendAnnouncement(client, opts, onProgress) {
     const consentidos = JSON.parse(fs.readFileSync(CONSENTS_PATH, 'utf-8'));
 
-    // 1. Sanitizar bloques
+    // 1. Sanitizar bloques (imágenes inexistentes)
     const sanitizedBlocks = sanitizeBlocks(opts.blocks);
 
-    // 2. Construir payload
-    const { container, filesMap } = buildPayload(sanitizedBlocks, opts.color);
+    // 2. Pre-procesar (dividir bloques de texto >4000)
+    const processedBlocks = preprocessBlocks(sanitizedBlocks);
 
-    if (!container) {
-        throw new Error('No se pudo construir el anuncio');
-    }
+    // 3. Paginar
+    const pages = paginateBlocks(processedBlocks);
 
-    // Lista de archivos a borrar al final (SIEMPRE)
-    const filesToDelete = Array.from(filesMap.keys());
+    console.log(`📄 Anuncio dividido en ${pages.length} página(s)`);
+    pages.forEach((page, i) => {
+        const totalSize = page.reduce((sum, b) => sum + blockTextSize(b), 0);
+        console.log(`   Página ${i + 1}: ${page.length} bloques, ~${totalSize} caracteres`);
+    });
+
+    // 4. Construir payloads
+    const pagePayloads = pages.map(page => buildPayload(page, opts.color));
+
+    // Archivos a borrar
+    const allFilesToDelete = new Set();
+    pagePayloads.forEach(p => {
+        for (const fn of p.filesMap.keys()) {
+            allFilesToDelete.add(fn);
+        }
+    });
 
     const total = consentidos.length;
     let enviados = 0;
     let fallidos = 0;
 
-    // Tracker de fallos
     let failedTracker = {};
     if (fs.existsSync(FAILED_TRACKER_PATH)) {
         try {
@@ -117,20 +232,8 @@ async function sendAnnouncement(client, opts, onProgress) {
         } catch { failedTracker = {}; }
     }
 
-    // Archivos válidos (los que existen realmente)
-    const validFiles = [];
-    for (const [filename, filePath] of filesMap) {
-        if (fs.existsSync(filePath)) {
-            validFiles.push({ filename, filePath });
-        }
-    }
-
-    if (filesMap.size > 0 && validFiles.length === 0) {
-        throw new Error('Las imágenes del anuncio ya no existen en el servidor. Vuelve a subirlas.');
-    }
-
     // ============================================================
-    // ENVÍO CON TRY/FINALLY: el borrado se ejecuta SIEMPRE
+    // ENVÍO
     // ============================================================
     try {
         for (let i = 0; i < consentidos.length; i++) {
@@ -145,21 +248,46 @@ async function sendAnnouncement(client, opts, onProgress) {
                     continue;
                 }
 
-                const payload = {
-                    components: [container.toJSON ? container.toJSON() : container],
-                    flags: getV2Flags()
-                };
+                let userFailed = false;
+                for (const { container, filesMap } of pagePayloads) {
+                    try {
+                        const payload = {
+                            components: [container.toJSON ? container.toJSON() : container],
+                            flags: getV2Flags()
+                        };
 
-                // Recrear attachments por cada envío (no son reutilizables)
-                if (validFiles.length > 0) {
-                    payload.files = validFiles.map(({ filename, filePath }) =>
-                        new AttachmentBuilder(filePath, { name: filename })
-                    );
+                        const validFiles = [];
+                        for (const [filename, filePath] of filesMap) {
+                            if (fs.existsSync(filePath)) {
+                                validFiles.push({ filename, filePath });
+                            }
+                        }
+
+                        if (validFiles.length > 0) {
+                            payload.files = validFiles.map(({ filename, filePath }) =>
+                                new AttachmentBuilder(filePath, { name: filename })
+                            );
+                        }
+
+                        await user.send(payload);
+
+                        if (pagePayloads.length > 1) {
+                            await new Promise(r => setTimeout(r, 1000));
+                        }
+                    } catch (pageErr) {
+                        console.error(`⚠️ Error enviando página a ${userId}:`, pageErr.message);
+                        userFailed = true;
+                        break;
+                    }
                 }
 
-                await user.send(payload);
-                enviados++;
-                delete failedTracker[userId];
+                if (userFailed) {
+                    fallidos++;
+                    failedTracker[userId] = (failedTracker[userId] || 0) + 1;
+                } else {
+                    enviados++;
+                    delete failedTracker[userId];
+                }
             } catch (err) {
                 console.warn(`⚠️ Falló ${userId}:`, err.message);
                 fallidos++;
@@ -172,37 +300,27 @@ async function sendAnnouncement(client, opts, onProgress) {
 
             await new Promise(r => setTimeout(r, RATE_LIMIT_MS));
 
-            // Pausa cada BATCH_SIZE envíos
             if ((i + 1) % BATCH_SIZE === 0 && i + 1 < consentidos.length) {
                 console.log(`⏸️ Pausa de lote (${i + 1}/${total})`);
                 await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
             }
         }
     } finally {
-        // ============================================================
-        // BORRADO SIEMPRE — incluso si el envío falla
-        // ============================================================
-        if (filesToDelete.length > 0) {
-            console.log(`🗑️ Borrando ${filesToDelete.length} imagen(es) del anuncio...`);
-            const { borradas, noEncontradas } = deleteFiles(filesToDelete);
-
+        if (allFilesToDelete.size > 0) {
+            console.log(`🗑️ Borrando ${allFilesToDelete.size} imagen(es)`);
+            const { borradas } = deleteFiles(Array.from(allFilesToDelete));
             if (borradas > 0) {
                 console.log(`✅ Borradas ${borradas} imagen(es)`);
-            }
-            if (noEncontradas.length > 0) {
-                console.warn(`⚠️ ${noEncontradas.length} imagen(es) ya no existían (posible doble envío o borrado manual)`);
             }
         }
     }
 
-    // Guardar tracker de fallos
     try {
         fs.writeFileSync(FAILED_TRACKER_PATH, JSON.stringify(failedTracker, null, 2));
     } catch (e) {
         console.warn('⚠️ No se pudo guardar failed_users.json:', e.message);
     }
 
-    // Auto-eliminar usuarios con 5+ fallos
     const toRemove = Object.entries(failedTracker)
         .filter(([_, count]) => count >= MAX_CONSECUTIVE_FAILURES)
         .map(([uid]) => uid);
@@ -210,10 +328,10 @@ async function sendAnnouncement(client, opts, onProgress) {
     if (toRemove.length > 0) {
         const cleaned = consentidos.filter(uid => !toRemove.includes(uid));
         fs.writeFileSync(CONSENTS_PATH, JSON.stringify(cleaned, null, 2));
-        console.log(`🧹 Eliminados ${toRemove.length} usuarios inactivos (5+ fallos)`);
+        console.log(`🧹 Eliminados ${toRemove.length} usuarios inactivos`);
     }
 
-    return { enviados, fallidos, total };
+    return { enviados, fallidos, total, pages: pages.length };
 }
 
 module.exports = { sendAnnouncement };

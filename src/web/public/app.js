@@ -3,8 +3,12 @@
 // ============================================================
 const MAX_BLOCKS = 20;
 const MAX_IMAGES_PER_GALLERY = 5;
-const MAX_TOTAL_IMAGES = 10;       // Límite global (Discord: máx 10 attachments)
+const MAX_TOTAL_IMAGES = 10;
 const MAX_IMAGE_SIZE_MB = 8;
+const MAX_TEXT_LENGTH = 4000;
+const MAX_TITLE_LENGTH = 256;
+const MAX_FIELD_NAME = 256;
+const MAX_FIELD_VALUE = 1024;
 const LOCALSTORAGE_KEY = 'anuncio_blocks_v2';
 
 // ============================================================
@@ -14,23 +18,60 @@ let blocks = [];
 let uploadTargetBlockId = null;
 
 // ============================================================
-// LOGIN
+// SESIÓN — OAuth2 con Discord
 // ============================================================
-async function login() {
-    const user = document.getElementById('user').value;
-    const password = document.getElementById('password').value;
-    const res = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user, password })
-    });
-    if (res.ok) {
-        document.getElementById('login-view').style.display = 'none';
-        document.getElementById('dashboard-view').style.display = 'block';
-        loadDashboard();
-    } else {
-        document.getElementById('login-error').textContent = 'Credenciales incorrectas';
+async function checkSession() {
+    try {
+        const res = await fetch('/api/me');
+        const data = await res.json();
+
+        if (data.loggedIn) {
+            document.getElementById('login-view').style.display = 'none';
+            document.getElementById('dashboard-view').style.display = 'block';
+
+            const userDisplay = document.getElementById('user-display');
+            if (userDisplay) {
+                let badge = '';
+                if (data.isBotOwner) badge = ' 🤖';
+                else if (data.isOwner) badge = ' 👑';
+                else if (data.hasAdminRole) badge = ' ⭐';
+
+                userDisplay.textContent = `👤 ${data.username}${badge}`;
+            }
+
+            handleUrlErrors();
+            loadDashboard();
+        } else {
+            document.getElementById('login-view').style.display = 'block';
+            document.getElementById('dashboard-view').style.display = 'none';
+            handleUrlErrors();
+        }
+    } catch (err) {
+        console.error('Error verificando sesión:', err);
+        document.getElementById('login-view').style.display = 'block';
     }
+}
+
+function handleUrlErrors() {
+    const params = new URLSearchParams(window.location.search);
+    const error = params.get('error');
+    if (!error) return;
+
+    const errorEl = document.getElementById('login-error');
+    if (!errorEl) return;
+
+    const errores = {
+        'not_in_guild': '❌ No estás en el servidor de Discord de este bot.',
+        'no_permission': '❌ No tienes el rol necesario para acceder a la dashboard.',
+        'no_code': '❌ Discord no devolvió el código de autorización.',
+        'token_exchange_failed': '❌ Error al verificar tu identidad con Discord.',
+        'user_fetch_failed': '❌ No se pudo obtener tu información de Discord.',
+        'access_denied': '❌ Cancelaste la autorización.',
+        'internal_error': '❌ Error interno. Intenta de nuevo.'
+    };
+
+    errorEl.textContent = errores[error] || `❌ Error: ${error}`;
+    window.history.replaceState({}, '', window.location.pathname);
 }
 
 async function logout() {
@@ -41,6 +82,52 @@ async function logout() {
 
 // ============================================================
 // CARGA INICIAL
+// ============================================================
+document.addEventListener('DOMContentLoaded', () => {
+    checkSession();
+});
+
+// ============================================================
+// HELPERS
+// ============================================================
+function countTotalImages(excludeBlockId = null) {
+    let total = 0;
+    for (const block of blocks) {
+        if (block.id === excludeBlockId) continue;
+        if (block.type === 'image' && block.url) total++;
+        if (block.type === 'gallery' && block.images) total += block.images.length;
+    }
+    return total;
+}
+
+/**
+ * Calcula el tamaño de texto total del anuncio (respetando el límite de Discord).
+ */
+function countTotalTextSize() {
+    let total = 0;
+    for (const block of blocks) {
+        if (block.type === 'text') total += (block.content || '').length;
+        if (block.type === 'title') total += (block.content || '').length + 2;
+        if (block.type === 'field') {
+            total += (block.name || '').length + (block.value || '').length + 4;
+        }
+        if (block.type === 'button') total += (block.label || '').length;
+    }
+    return total;
+}
+
+function cleanText(text) {
+    if (!text) return '';
+    return text.replace(/\s+/g, ' ').trim();
+}
+
+function cleanUrl(url) {
+    if (!url) return '';
+    return url.replace(/\s+/g, '').replace(/[<>]/g, '').trim();
+}
+
+// ============================================================
+// DASHBOARD
 // ============================================================
 async function loadDashboard() {
     const res = await fetch('/api/consents');
@@ -59,19 +146,6 @@ async function loadUploadsInfo() {
     const data = await res.json();
     document.getElementById('uploads-count').textContent = data.count;
     document.getElementById('uploads-size').textContent = data.totalSizeMB + ' MB';
-}
-
-// ============================================================
-// HELPERS
-// ============================================================
-function countTotalImages(excludeBlockId = null) {
-    let total = 0;
-    for (const block of blocks) {
-        if (block.id === excludeBlockId) continue;
-        if (block.type === 'image' && block.url) total++;
-        if (block.type === 'gallery' && block.images) total += block.images.length;
-    }
-    return total;
 }
 
 // ============================================================
@@ -187,9 +261,12 @@ function renderBlocks() {
     }
 
     const totalImages = countTotalImages();
+    const totalText = countTotalTextSize();
     const imageWarning = totalImages > MAX_TOTAL_IMAGES ? ' ⚠️' : '';
+    const textWarning = totalText > MAX_TEXT_LENGTH ? ' ⚠️' : '';
+
     document.getElementById('block-count').textContent =
-        `Bloques: ${blocks.length} / ${MAX_BLOCKS}  •  Imágenes: ${totalImages} / ${MAX_TOTAL_IMAGES}${imageWarning}`;
+        `Bloques: ${blocks.length} / ${MAX_BLOCKS}  •  Imágenes: ${totalImages} / ${MAX_TOTAL_IMAGES}${imageWarning}  •  Texto: ${totalText} / ${MAX_TEXT_LENGTH}${textWarning}`;
 }
 
 function renderBlockHeader(block, idx) {
@@ -212,17 +289,32 @@ function renderBlockHeader(block, idx) {
 
 function renderBlockBody(block) {
     switch (block.type) {
-        case 'text':
-            return `<textarea placeholder="Escribe el texto (soporta Markdown)..." 
-                oninput="updateBlock('${block.id}', 'content', this.value)">${block.content || ''}</textarea>`;
+        case 'text': {
+            const textLength = (block.content || '').length;
+            const warningClass = textLength > MAX_TEXT_LENGTH ? 'warning' : '';
+            const warningHint = textLength > MAX_TEXT_LENGTH 
+                ? ` ⚠️ Se dividirá en ${Math.ceil(textLength / MAX_TEXT_LENGTH)} bloques` 
+                : '';
+            return `
+                <textarea placeholder="Escribe el texto (soporta Markdown)..." 
+                    class="${warningClass}"
+                    oninput="updateBlock('${block.id}', 'content', this.value)">${block.content || ''}</textarea>
+                <p class="hint ${warningClass}">${textLength} / ${MAX_TEXT_LENGTH} caracteres${warningHint}</p>
+            `;
+        }
 
-        case 'title':
+        case 'title': {
+            const titleLength = (block.content || '').length;
+            const titleWarning = titleLength > MAX_TITLE_LENGTH ? 'warning' : '';
             return `
                 <input placeholder="Título grande" value="${block.content || ''}" 
+                    maxlength="${MAX_TITLE_LENGTH}"
                     oninput="updateBlock('${block.id}', 'content', this.value)">
+                <p class="hint ${titleWarning}">${titleLength} / ${MAX_TITLE_LENGTH} caracteres</p>
                 <input placeholder="URL del título (opcional)" value="${block.url || ''}" 
                     oninput="updateBlock('${block.id}', 'url', this.value)">
             `;
+        }
 
         case 'image':
             return `
@@ -250,15 +342,22 @@ function renderBlockBody(block) {
                     onchange="updateBlock('${block.id}', 'divider', this.checked)"> Con línea divisoria</label>
             `;
 
-        case 'field':
+        case 'field': {
+            const nameLen = (block.name || '').length;
+            const valueLen = (block.value || '').length;
             return `
                 <input placeholder="Nombre del campo" value="${block.name || ''}" 
+                    maxlength="${MAX_FIELD_NAME}"
                     oninput="updateBlock('${block.id}', 'name', this.value)">
+                <p class="hint">${nameLen} / ${MAX_FIELD_NAME}</p>
                 <input placeholder="Valor del campo" value="${block.value || ''}" 
+                    maxlength="${MAX_FIELD_VALUE}"
                     oninput="updateBlock('${block.id}', 'value', this.value)">
+                <p class="hint">${valueLen} / ${MAX_FIELD_VALUE}</p>
                 <label><input type="checkbox" ${block.inline ? 'checked' : ''} 
                     onchange="updateBlock('${block.id}', 'inline', this.checked)"> Inline</label>
             `;
+        }
 
         case 'button':
             return `
@@ -286,7 +385,6 @@ function clearBlocks() {
 // SUBIDA DE IMÁGENES
 // ============================================================
 function triggerUpload(blockId) {
-    // Verificar límite global ANTES de abrir el selector
     const currentTotal = countTotalImages(blockId);
     if (currentTotal >= MAX_TOTAL_IMAGES) {
         alert(`Ya tienes ${MAX_TOTAL_IMAGES} imágenes en total. Quita algunas antes de subir más.`);
@@ -307,7 +405,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const files = e.target.files;
             if (!files.length || !uploadTargetBlockId) return;
 
-            // Validar tamaño
             for (const f of files) {
                 if (f.size > MAX_IMAGE_SIZE_MB * 1024 * 1024) {
                     alert(`La imagen "${f.name}" pesa más de ${MAX_IMAGE_SIZE_MB} MB`);
@@ -330,7 +427,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const block = blocks.find(b => b.id === uploadTargetBlockId);
                 if (!block) return;
 
-                // Calcular cuántas podemos añadir respetando el límite global
                 const currentTotal = countTotalImages(block.id);
                 const remainingGlobal = MAX_TOTAL_IMAGES - currentTotal;
 
@@ -349,12 +445,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (!block.images) block.images = [];
                     const remainingGallery = MAX_IMAGES_PER_GALLERY - block.images.length;
                     const allowed = Math.min(remainingGlobal, remainingGallery, data.files.length);
-                    
+
                     if (allowed <= 0) {
                         alert('Esta galería ya está llena o has alcanzado el límite total.');
                         return;
                     }
-                    
+
                     const toAdd = data.files.slice(0, allowed);
                     block.images.push(...toAdd);
                 }
@@ -411,8 +507,8 @@ function renderBlockPreview(block) {
         case 'field':
             return block.name && block.value ? `<div class="embed-field"><strong>${block.name}</strong><br>${block.value}</div>` : '';
         case 'button':
-            return (block.label && block.url) 
-                ? `<span class="preview-button">🔗 ${block.label}</span>` 
+            return (block.label && block.url)
+                ? `<span class="preview-button">🔗 ${block.label}</span>`
                 : '';
         default:
             return '';
@@ -429,7 +525,50 @@ async function sendAnnouncement() {
         return;
     }
 
-    // Validar total de imágenes
+    // ============================================================
+    // VALIDAR LONGITUDES DE CAMPOS CRÍTICOS
+    // ============================================================
+    for (const block of blocks) {
+        if (block.type === 'title' && block.content && block.content.length > MAX_TITLE_LENGTH) {
+            document.getElementById('result').textContent =
+                `❌ El título tiene ${block.content.length} caracteres. Máximo ${MAX_TITLE_LENGTH}.`;
+            document.getElementById('result').className = 'error';
+            return;
+        }
+        if (block.type === 'field') {
+            if (block.name && block.name.length > MAX_FIELD_NAME) {
+                document.getElementById('result').textContent =
+                    `❌ El nombre del campo tiene ${block.name.length} caracteres. Máximo ${MAX_FIELD_NAME}.`;
+                document.getElementById('result').className = 'error';
+                return;
+            }
+            if (block.value && block.value.length > MAX_FIELD_VALUE) {
+                document.getElementById('result').textContent =
+                    `❌ El valor del campo tiene ${block.value.length} caracteres. Máximo ${MAX_FIELD_VALUE}.`;
+                document.getElementById('result').className = 'error';
+                return;
+            }
+        }
+    }
+
+    // ============================================================
+    // VALIDAR TEXTO TOTAL (límite de 4000 de Discord)
+    // ============================================================
+    const totalTextSize = countTotalTextSize();
+    if (totalTextSize > MAX_TEXT_LENGTH) {
+        const pages = Math.ceil(totalTextSize / MAX_TEXT_LENGTH);
+        const continuar = confirm(
+            `⚠️ El texto total del anuncio es de ${totalTextSize} caracteres.\n\n` +
+            `Discord limita cada mensaje a ${MAX_TEXT_LENGTH} caracteres.\n` +
+            `Tu anuncio se enviará en ${pages} mensajes seguidos por usuario.\n\n` +
+            `¿Continuar?`
+        );
+        if (!continuar) return;
+    }
+
+    // ============================================================
+    // VALIDAR IMÁGENES
+    // ============================================================
     const totalImages = countTotalImages();
     if (totalImages > MAX_TOTAL_IMAGES) {
         document.getElementById('result').textContent =
@@ -481,7 +620,6 @@ async function sendAnnouncement() {
             document.getElementById('send-btn').disabled = false;
             evtSource.close();
 
-            // Limpiar bloques que usaban imágenes locales (ya se borraron del servidor)
             blocks = blocks.map(block => {
                 if (block.type === 'image' && block.url && block.url.startsWith('/uploads/')) {
                     return { ...block, url: '' };

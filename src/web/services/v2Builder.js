@@ -11,17 +11,99 @@ const {
     MessageFlags
 } = require('discord.js');
 
-const MAX_TOTAL_IMAGES = 10; // Límite duro de Discord
+const MAX_TOTAL_IMAGES = 10;
+const MAX_TEXT_LENGTH = 4000;      // Límite de Discord para TextDisplay
+const MAX_TITLE_LENGTH = 256;      // Límite para títulos grandes
+const MAX_FIELD_NAME = 256;
+const MAX_FIELD_VALUE = 1024;
+
+/**
+ * Divide un texto largo en chunks de máximo `maxLength` caracteres.
+ * Intenta cortar por párrafos o frases para no romper palabras.
+ */
+function splitText(text, maxLength = MAX_TEXT_LENGTH) {
+    if (!text) return [];
+    if (text.length <= maxLength) return [text];
+
+    const chunks = [];
+    let remaining = text;
+
+    while (remaining.length > maxLength) {
+        let cutAt = -1;
+
+        // 1. Intentar cortar por doble salto de línea (párrafo)
+        cutAt = remaining.lastIndexOf('\n\n', maxLength);
+
+        // 2. Si no, por salto simple
+        if (cutAt === -1 || cutAt < maxLength * 0.5) {
+            cutAt = remaining.lastIndexOf('\n', maxLength);
+        }
+
+        // 3. Si no, por punto seguido de espacio
+        if (cutAt === -1 || cutAt < maxLength * 0.5) {
+            cutAt = remaining.lastIndexOf('. ', maxLength);
+            if (cutAt !== -1) cutAt += 1;
+        }
+
+        // 4. Si no, por espacio
+        if (cutAt === -1 || cutAt < maxLength * 0.5) {
+            cutAt = remaining.lastIndexOf(' ', maxLength);
+        }
+
+        // 5. Cortar a lo bruto si no hay opción
+        if (cutAt === -1) cutAt = maxLength;
+
+        chunks.push(remaining.substring(0, cutAt).trim());
+        remaining = remaining.substring(cutAt).trim();
+    }
+
+    if (remaining.length > 0) chunks.push(remaining);
+
+    return chunks;
+}
+
+/**
+ * Sanitiza el título (sin saltos de línea, sin espacios múltiples).
+ */
+function sanitizeTitle(content) {
+    if (!content) return '';
+    return content
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, MAX_TITLE_LENGTH);
+}
+
+/**
+ * Sanitiza la URL (sin espacios ni caracteres raros).
+ */
+function sanitizeUrl(url) {
+    if (!url) return '';
+    return url
+        .replace(/\s+/g, '')
+        .replace(/[<>]/g, '')
+        .trim();
+}
+
+/**
+ * Sanitiza descripciones (mantiene saltos de línea).
+ */
+function sanitizeDescription(content) {
+    if (!content) return '';
+    return content
+        .replace(/\r/g, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
 
 /**
  * Construye un Container V2 desde bloques.
  * Soporta: text, title, image, gallery, separator, field, button (link)
- * Respeta el límite global de 10 imágenes.
  */
 function buildFromBlocks(blocks, colorHex, resolveImage, filesMap) {
     const container = new ContainerBuilder();
 
-    // Color del borde
+    // Color
     if (colorHex) {
         try {
             const hex = colorHex.startsWith('#') ? colorHex : `#${colorHex}`;
@@ -64,22 +146,47 @@ function buildFromBlocks(blocks, colorHex, resolveImage, filesMap) {
             case 'text':
                 if (block.content) {
                     flushButtons();
-                    container.addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent(block.content)
-                    );
-                    componentsCount++;
+                    const cleanText = sanitizeDescription(block.content);
+                    const chunks = splitText(cleanText, MAX_TEXT_LENGTH);
+                    for (const chunk of chunks) {
+                        if (componentsCount >= MAX_COMPONENTS) break;
+                        container.addTextDisplayComponents(
+                            new TextDisplayBuilder().setContent(chunk)
+                        );
+                        componentsCount++;
+                    }
                 }
                 break;
 
             case 'title':
                 if (block.content) {
                     flushButtons();
-                    let titleText = `# ${block.content}`;
-                    if (block.url) titleText = `# [${block.content}](${block.url})`;
-                    container.addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent(titleText)
-                    );
-                    componentsCount++;
+                    const cleanContent = sanitizeTitle(block.content);
+                    let titleText = `# ${cleanContent}`;
+
+                    if (block.url) {
+                        const cleanUrl = sanitizeUrl(block.url);
+                        if (/^https?:\/\/.+/i.test(cleanUrl)) {
+                            titleText = `# [${cleanContent}](${cleanUrl})`;
+                        }
+                    }
+
+                    // El título también tiene límite de 4000
+                    if (titleText.length > MAX_TEXT_LENGTH) {
+                        const chunks = splitText(titleText, MAX_TEXT_LENGTH);
+                        for (const chunk of chunks) {
+                            if (componentsCount >= MAX_COMPONENTS) break;
+                            container.addTextDisplayComponents(
+                                new TextDisplayBuilder().setContent(chunk)
+                            );
+                            componentsCount++;
+                        }
+                    } else {
+                        container.addTextDisplayComponents(
+                            new TextDisplayBuilder().setContent(titleText)
+                        );
+                        componentsCount++;
+                    }
                 }
                 break;
 
@@ -139,8 +246,11 @@ function buildFromBlocks(blocks, colorHex, resolveImage, filesMap) {
             case 'field':
                 if (block.name && block.value) {
                     flushButtons();
+                    const fieldName = (block.name || '').slice(0, MAX_FIELD_NAME);
+                    const fieldValue = (block.value || '').slice(0, MAX_FIELD_VALUE);
+
                     container.addTextDisplayComponents(
-                        new TextDisplayBuilder().setContent(`**${block.name}**\n${block.value}`)
+                        new TextDisplayBuilder().setContent(`**${fieldName}**\n${fieldValue}`)
                     );
                     componentsCount++;
                 }
@@ -148,7 +258,10 @@ function buildFromBlocks(blocks, colorHex, resolveImage, filesMap) {
 
             case 'button':
                 if (block.label && block.url && /^https?:\/\//i.test(block.url)) {
-                    buttonBuffer.push({ label: block.label, url: block.url });
+                    buttonBuffer.push({
+                        label: block.label,
+                        url: sanitizeUrl(block.url)
+                    });
                 }
                 break;
         }
@@ -172,5 +285,8 @@ function getV2Flags() {
 module.exports = {
     buildFromBlocks,
     getV2Flags,
-    MAX_TOTAL_IMAGES
+    splitText,
+    sanitizeTitle,
+    sanitizeUrl,
+    sanitizeDescription
 };
