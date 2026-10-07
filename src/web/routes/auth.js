@@ -14,6 +14,46 @@ const BOT_OWNER_ID = process.env.BOT_OWNER_ID;
 const SCOPES = ['identify', 'guilds', 'guilds.members.read'];
 
 // ============================================================
+// HELPER: Notificar al owner del bot
+// ============================================================
+async function notifyOwner(client, user, reason, req) {
+    if (!BOT_OWNER_ID || !client) return;
+
+    try {
+        const owner = await client.users.fetch(BOT_OWNER_ID).catch(() => null);
+        if (!owner) {
+            console.warn(`⚠️ No se pudo encontrar al owner ${BOT_OWNER_ID} para notificar`);
+            return;
+        }
+
+        const razones = {
+            'not_in_guild': '🚫 No está en el servidor',
+            'no_permission': '🔒 No tiene el rol autorizado'
+        };
+
+        const ip = req.headers['cf-connecting-ip'] 
+            || req.headers['x-forwarded-for']?.split(',')[0] 
+            || req.connection?.remoteAddress 
+            || 'Desconocida';
+
+        const timestamp = Math.floor(Date.now() / 1000);
+
+        const mensaje = 
+            `⚠️ **Intento de acceso a la dashboard**\n\n` +
+            `👤 **Usuario:** ${user.username} (\`${user.id}\`)\n` +
+            `❌ **Motivo:** ${razones[reason] || reason}\n` +
+            `🌐 **IP:** \`${ip}\`\n` +
+            `🕐 **Cuándo:** <t:${timestamp}:f> (<t:${timestamp}:R>)\n\n` +
+            `Si no reconoces este intento, revisa quién tiene acceso a tu dashboard.`;
+
+        await owner.send(mensaje);
+        console.log(`📨 Notificación enviada al owner sobre: ${user.username}`);
+    } catch (err) {
+        console.warn('⚠️ No se pudo enviar notificación al owner:', err.message);
+    }
+}
+
+// ============================================================
 // LOGIN — redirige a Discord
 // ============================================================
 router.get('/discord', (req, res) => {
@@ -81,22 +121,17 @@ router.get('/discord/callback', async (req, res) => {
 
         console.log(`🔐 Intento de login: ${user.username} (${userId})`);
 
-        // ============================================================
-        // 3. VERIFICAR: ¿Es el owner del BOT?
-        // ============================================================
+        // 3. ¿Es el owner del bot?
         const isBotOwner = BOT_OWNER_ID && userId === BOT_OWNER_ID;
 
-        // ============================================================
-        // 4. Si NO es el owner del bot, verificar que esté en el guild y tenga permisos
-        // ============================================================
         let hasAdminRole = false;
         let isServerOwner = false;
         let isInGuild = false;
 
-        if (!isBotOwner) {
-            // Solo verificamos guild y permisos si NO es el owner del bot
+        const client = req.app.get('discordClient');
 
-            // 4.1. Obtener info del miembro en el servidor
+        if (!isBotOwner) {
+            // Verificar que esté en el guild
             const memberRes = await fetch(
                 `https://discord.com/api/users/@me/guilds/${GUILD_ID}/member`,
                 { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -104,19 +139,22 @@ router.get('/discord/callback', async (req, res) => {
 
             if (!memberRes.ok) {
                 console.warn(`⚠️ Usuario ${user.username} no está en el guild`);
+                
+                // 🔔 Notificar al owner
+                await notifyOwner(client, user, 'not_in_guild', req);
+                
                 return res.redirect('/?error=not_in_guild');
             }
 
             const member = await memberRes.json();
             isInGuild = true;
 
-            // 4.2. Verificar rol
+            // Verificar rol
             const config = loadJson('config.json', {});
             const adminRoleId = config.admin_role_id;
             hasAdminRole = adminRoleId && member.roles.includes(adminRoleId);
 
-            // 4.3. Verificar si es owner del server
-            const client = req.app.get('discordClient');
+            // Verificar si es owner del server
             if (client) {
                 const guild = client.guilds.cache.get(GUILD_ID);
                 if (guild && guild.ownerId === userId) {
@@ -124,9 +162,13 @@ router.get('/discord/callback', async (req, res) => {
                 }
             }
 
-            // 4.4. Rechazar si no tiene permisos
+            // Rechazar si no tiene permisos
             if (!hasAdminRole && !isServerOwner) {
                 console.warn(`⚠️ Usuario ${user.username} sin permisos`);
+                
+                // 🔔 Notificar al owner
+                await notifyOwner(client, user, 'no_permission', req);
+                
                 return res.redirect('/?error=no_permission');
             }
         }
@@ -140,7 +182,6 @@ router.get('/discord/callback', async (req, res) => {
         req.session.isBotOwner = isBotOwner;
         req.session.hasAdminRole = hasAdminRole;
 
-        // Log del tipo de acceso
         if (isBotOwner) {
             console.log(`✅ Login correcto (BOT OWNER): ${user.username} (${userId})`);
         } else if (isServerOwner) {
